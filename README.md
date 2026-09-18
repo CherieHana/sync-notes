@@ -5,6 +5,11 @@
 
 Flutter 一套代码出两端，Supabase 负责登录、存储和实时推送，本地 SQLite 存一份离线副本。
 
+<p align="center">
+  <img src="docs/notes-list.png" width="330" alt="笔记列表">
+  <img src="docs/note-edit.png" width="330" alt="编辑页">
+</p>
+
 ## 能做到什么
 
 - Android 和 Windows 共用一套代码，同一账号登录即同步

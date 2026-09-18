@@ -12,6 +12,9 @@ config.json
 # 打好的安装包压缩包
 dist/
 
+# 截图生成器的中间产物（正式截图在 docs/ 下）
+test/goldens/
+
 # IDE
 .idea/
 .vscode/
