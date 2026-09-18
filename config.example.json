@@ -1,0 +1,4 @@
+{
+  "SUPABASE_URL": "https://你的项目编号.supabase.co",
+  "SUPABASE_ANON_KEY": "你的 anon public key"
+}

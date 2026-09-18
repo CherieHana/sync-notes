@@ -1,0 +1,8 @@
+# drift 默认把 DateTime 存成秒级整数，会丢亚秒精度，
+# 导致同一秒内的多次改动在增量同步时被漏掉。改成文本存储保留微秒。
+targets:
+  $default:
+    builders:
+      drift_dev:
+        options:
+          store_date_time_values_as_text: true

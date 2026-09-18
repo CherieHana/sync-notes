@@ -1,0 +1,28 @@
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+*.iml
+
+# 真实配置（含 Supabase 地址与 anon key），不进版本库
+config.json
+
+# 打好的安装包压缩包
+dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Windows
+*.exe.stackdump
+
+# Android
+android/.gradle/
+android/local.properties
+android/key.properties
+*.jks
+*.keystore
