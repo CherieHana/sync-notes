@@ -11,6 +11,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
+import 'package:path/path.dart' as p;
 import 'package:sync_notes/app_services.dart';
 import 'package:sync_notes/data/local/local_store.dart';
 import 'package:sync_notes/data/sync/sync_controller.dart';
@@ -67,8 +69,14 @@ ThemeData get _theme => ThemeData(
 AppServices _services({
   List<LocalNote> notes = const [],
   List<LocalFolder> folders = const [],
+  List<LocalImage> images = const [],
+  Map<String, String> imagePaths = const {},
 }) {
   final local = FakeLocalStore()..device = 'screenshot';
+  local.imageRealPaths.addAll(imagePaths);
+  for (final image in images) {
+    local.images[image.id] = image;
+  }
   for (final folder in folders) {
     local.folders[folder.id] = folder;
   }
@@ -116,6 +124,40 @@ LocalFolder _folder(String id, String name, {required Duration ago}) {
     name: name,
     version: 2,
     baseVersion: 2,
+    createdAt: at,
+    updatedAt: at,
+    dirty: false,
+  );
+}
+
+/// 造一张真实的 PNG 放到临时目录，截图里就能看到真图片而不是占位框。
+String _writeSampleImage(String name, int width, int height) {
+  final image = img.Image(width: width, height: height);
+  for (var y = 0; y < height; y++) {
+    for (var x = 0; x < width; x++) {
+      // 画一个横向渐变，方便看出图片有没有被拉伸变形。
+      image.setPixelRgb(
+        x,
+        y,
+        150 + (x * 100 ~/ width),
+        60,
+        60 + (y * 80 ~/ height),
+      );
+    }
+  }
+  final file = File(p.join(Directory.systemTemp.path, name));
+  file.writeAsBytesSync(img.encodePng(image));
+  return file.path;
+}
+
+LocalImage _image(String id, {required int width, required int height}) {
+  final at = DateTime.now();
+  return LocalImage(
+    id: id,
+    storagePath: 'demo/$id.jpg',
+    byteSize: 1024,
+    width: width,
+    height: height,
     createdAt: at,
     updatedAt: at,
     dirty: false,
@@ -239,6 +281,39 @@ void main() {
     await expectLater(
       find.byType(NoteEditPage),
       matchesGoldenFile('goldens/note_edit.png'),
+    );
+  });
+
+  testWidgets('带图片的笔记', (tester) async {
+    const imageId = '55555555-5555-5555-5555-555555555555';
+    final path = _writeSampleImage('sync-notes-sample.png', 900, 600);
+    final services = _services(
+      notes: [
+        _note(
+          '1',
+          '测试\n图片\n[[img:$imageId]]\n图片下面还有一行字',
+          ago: const Duration(minutes: 5),
+        ),
+      ],
+      images: [_image(imageId, width: 900, height: 600)],
+      imagePaths: {imageId: path},
+    );
+
+    await _pump(
+      tester,
+      AppScope(
+        services: services,
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: _theme,
+          home: const NoteEditPage(noteId: '1'),
+        ),
+      ),
+    );
+
+    await expectLater(
+      find.byType(NoteEditPage),
+      matchesGoldenFile('goldens/note_with_image.png'),
     );
   });
 }

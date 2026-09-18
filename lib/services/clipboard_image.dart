@@ -1,6 +1,10 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
+
+import 'image_pipeline.dart';
 
 /// 从系统剪切板里读一张图片。
 ///
@@ -42,6 +46,15 @@ class ClipboardImage {
         // 平台那边给的是原始像素，编码成 PNG 才能进后续的压缩流程。
         // 一张截图有上百万像素，放后台 isolate 里做，别卡住界面。
         return compute(_encodeRgba, (raw, width, height));
+      case 'path':
+        // 在资源管理器里复制的文件，剪切板上只有路径。
+        final path = result['path'];
+        if (path is! String) return null;
+        // 只认图片；复制一个 txt 过来时不该往笔记里塞图。
+        if (!ImagePipeline.looksLikeImage(path)) return null;
+        final file = File(path);
+        if (!file.existsSync()) return null;
+        return file.readAsBytes();
       default:
         return null;
     }

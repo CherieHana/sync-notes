@@ -40,6 +40,22 @@ class ImagePipeline {
   /// 压缩后仍然超过这个大小也拒绝，多半是格式特别怪。
   static const int maxResultBytes = 5 * 1024 * 1024;
 
+  static const List<String> imageExtensions = [
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.gif',
+    '.bmp',
+    '.webp',
+  ];
+
+  /// 按后缀粗略判断是不是图片。真正的把关在解码那一步，
+  /// 这里只是避免把明显不是图片的文件丢进解码器。
+  static bool looksLikeImage(String path) {
+    final lower = path.toLowerCase();
+    return imageExtensions.any(lower.endsWith);
+  }
+
   /// 选一张图。返回 null 表示用户取消了。
   static Future<PreparedImage?> pick({bool fromCamera = false}) async {
     final picker = ImagePicker();

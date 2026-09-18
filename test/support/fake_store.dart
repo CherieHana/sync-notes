@@ -13,6 +13,9 @@ class FakeLocalStore implements LocalStore {
   /// 图片文件本体，键是图片 id。
   final Map<String, List<int>> files = {};
 
+  /// 指向本机真实图片文件的路径，截图工具用它渲染真图。
+  final Map<String, String> imageRealPaths = {};
+
   DateTime? notesPulledAt;
   DateTime? foldersPulledAt;
   DateTime? imagesPulledAt;
@@ -257,10 +260,12 @@ class FakeLocalStore implements LocalStore {
   }
 
   @override
-  Future<String> imageFilePath(String id) async => '/fake/images/$id.jpg';
+  Future<String> imageFilePath(String id) async =>
+      imageRealPaths[id] ?? '/fake/images/$id.jpg';
 
   @override
-  Future<bool> imageFileExists(String id) async => files.containsKey(id);
+  Future<bool> imageFileExists(String id) async =>
+      files.containsKey(id) || imageRealPaths.containsKey(id);
 
   @override
   Future<void> writeImageFile(String id, List<int> bytes) async =>

@@ -3,6 +3,7 @@
 #include <optional>
 
 #include "clipboard_image_channel.h"
+#include "drop_target.h"
 #include "flutter/generated_plugin_registrant.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
@@ -27,6 +28,7 @@ bool FlutterWindow::OnCreate() {
   }
   RegisterPlugins(flutter_controller_->engine());
   RegisterClipboardImageChannel(flutter_controller_->engine()->messenger());
+  RegisterExternalDropTarget(GetHandle(), flutter_controller_->engine()->messenger());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -42,6 +44,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  UnregisterExternalDropTarget(GetHandle());
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }

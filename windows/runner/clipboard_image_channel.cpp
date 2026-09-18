@@ -156,6 +156,47 @@ std::optional<flutter::EncodableMap> ReadDibFormat() {
   return result;
 }
 
+// 在资源管理器里 Ctrl+C 复制一个文件时，剪切板上放的是 CF_HDROP（文件路径列表），
+// 既不是 PNG 也不是 DIB，所以得单独认一下。
+// 这里只把第一个文件的路径交给 Dart，由它决定是不是图片。
+std::optional<flutter::EncodableMap> ReadFileDropFormat() {
+  if (!::IsClipboardFormatAvailable(CF_HDROP)) {
+    return std::nullopt;
+  }
+  HANDLE handle = ::GetClipboardData(CF_HDROP);
+  if (handle == nullptr) {
+    return std::nullopt;
+  }
+
+  // 注意：这个 HDROP 属于剪切板，不能自己释放。
+  auto hdrop = static_cast<HDROP>(handle);
+  const UINT length = ::DragQueryFileW(hdrop, 0, nullptr, 0);
+  if (length == 0) {
+    return std::nullopt;
+  }
+
+  std::wstring wide(static_cast<size_t>(length) + 1, L'\0');
+  if (::DragQueryFileW(hdrop, 0, wide.data(), length + 1) == 0) {
+    return std::nullopt;
+  }
+  wide.resize(length);
+
+  // 转成 UTF-8 再交给 Dart，中文路径才不会出错。
+  const int bytes = ::WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr,
+                                         0, nullptr, nullptr);
+  if (bytes <= 1) {
+    return std::nullopt;
+  }
+  std::string utf8(static_cast<size_t>(bytes - 1), '\0');
+  ::WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, utf8.data(), bytes,
+                        nullptr, nullptr);
+
+  flutter::EncodableMap map;
+  map[flutter::EncodableValue("format")] = flutter::EncodableValue("path");
+  map[flutter::EncodableValue("path")] = flutter::EncodableValue(utf8);
+  return map;
+}
+
 std::optional<flutter::EncodableMap> ReadClipboardImage() {
   if (!::OpenClipboard(nullptr)) {
     return std::nullopt;
@@ -165,6 +206,9 @@ std::optional<flutter::EncodableMap> ReadClipboardImage() {
   auto result = ReadPngFormat();
   if (!result.has_value()) {
     result = ReadDibFormat();
+  }
+  if (!result.has_value()) {
+    result = ReadFileDropFormat();
   }
 
   ::CloseClipboard();

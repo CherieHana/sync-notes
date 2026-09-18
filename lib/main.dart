@@ -5,6 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'app_services.dart';
 import 'config.dart';
+import 'services/external_drop.dart';
 import 'ui/login_page.dart';
 import 'ui/notes_list_page.dart';
 
@@ -23,6 +24,8 @@ Future<void> main() async {
     // 同一种东西（都作为请求头的 apikey），不会影响老项目。
     publishableKey: config.supabaseAnonKey,
   );
+  // 拖放事件要在界面起来之前接上，免得早期的拖放被丢掉。
+  ExternalDrop.listen();
   runApp(const SyncNotesApp());
 }
 

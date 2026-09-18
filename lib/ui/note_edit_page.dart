@@ -1,13 +1,17 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
 import '../app_services.dart';
 import '../data/local/local_store.dart';
 import '../services/image_pipeline.dart';
 import '../services/clipboard_image.dart';
+import '../services/external_drop.dart';
+import '../services/file_import.dart';
 import '../services/note_lock.dart';
 import '../services/undo_stack.dart';
 import 'note_unlock_view.dart';
@@ -36,6 +40,19 @@ class _NoteEditPageState extends State<NoteEditPage> {
   static const Duration _autosaveDelay = Duration(milliseconds: 800);
   static const Duration _imageRetryDelay = Duration(seconds: 3);
 
+  static const TextStyle _bodyStyle = TextStyle(fontSize: 16, height: 1.6);
+
+  /// 正文的行高样式。
+  ///
+  /// 这里必须显式传一个 `forceStrutHeight: false` 的 strut。
+  /// EditableText 在没收到 strutStyle 时会自己造一个**强制固定行高**的，
+  /// 结果图片占位符撑不开所在行，上下各溢出一大截，把前后的文字盖住。
+  /// 普通 Text 没有这个默认行为，所以同样的内容放在 Text 里是正常的。
+  static final StrutStyle _bodyStrut = StrutStyle.fromTextStyle(
+    _bodyStyle,
+    forceStrutHeight: false,
+  );
+
   final FocusNode _focus = FocusNode();
   final UndoStack<_Snapshot> _undo = UndoStack<_Snapshot>();
 
@@ -44,6 +61,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
   LocalNote? _note;
   Timer? _debounce;
   Timer? _imageRetry;
+  StreamSubscription<DroppedContent>? _dropSubscription;
 
   bool _loaded = false;
   bool _suppressChanges = false;
@@ -62,6 +80,11 @@ class _NoteEditPageState extends State<NoteEditPage> {
     if (_loaded) return;
     _loaded = true;
     _services = AppScope.of(context);
+    if (ExternalDrop.isSupported) {
+      _dropSubscription = ExternalDrop.stream.listen((content) {
+        unawaited(_handleDrop(content));
+      });
+    }
     unawaited(_load());
   }
 
@@ -69,6 +92,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
   void dispose() {
     _debounce?.cancel();
     _imageRetry?.cancel();
+    unawaited(_dropSubscription?.cancel());
     _controller?.removeListener(_onChanged);
     _controller?.dispose();
     _focus.dispose();
@@ -301,6 +325,91 @@ class _NoteEditPageState extends State<NoteEditPage> {
     );
     _appendImageMarker(id);
     unawaited(services.sync.sync());
+  }
+
+  // ---------------------------------------------------------------------
+  // 从软件外拖进来
+  // ---------------------------------------------------------------------
+
+  Future<void> _handleDrop(DroppedContent content) async {
+    if (_needsUnlock || _controller == null) return;
+
+    // 先处理纯文本：从网页或别的文档里拖一段选中的字过来时只有 text。
+    final text = content.text;
+    if (text != null && text.trim().isNotEmpty) {
+      _insertTextAtCaret(text);
+    }
+
+    for (final path in content.files) {
+      await _insertDroppedFile(path);
+    }
+  }
+
+  Future<void> _insertDroppedFile(String path) async {
+    final services = _services;
+    if (services == null) return;
+    final name = p.basename(path);
+
+    try {
+      if (ImagePipeline.looksLikeImage(path)) {
+        final file = File(path);
+        // 先看文件大小，超过上限就别读进内存了。
+        final size = file.lengthSync();
+        if (size > ImagePipeline.maxSourceBytes) {
+          _toast('「$name」超过 20MB，换一张小一点的吧');
+          return;
+        }
+        final prepared = await ImagePipeline.prepare(await file.readAsBytes());
+        if (!mounted) return;
+        await _storeImage(prepared);
+        return;
+      }
+
+      if (FileImport.allowedExtensions.any(path.toLowerCase().endsWith)) {
+        // 文本文件走和「导入文件」同一套解码，中文 txt 不会乱码。
+        final decoded = FileImport.decodeText(await File(path).readAsBytes());
+        final title = FileImport.titleFromFileName(name);
+        if (!mounted) return;
+        _insertTextAtCaret('$title\n\n${decoded.text}');
+        return;
+      }
+
+      _toast('不认识这种文件：$name');
+    } on ImageTooLargeException catch (error) {
+      _toast(error.message);
+    } catch (error) {
+      _toast('「$name」读不了：$error');
+    }
+  }
+
+  /// 在光标处插入一段文字，并保持照片的编号顺序。
+  void _insertTextAtCaret(String text) {
+    final controller = _controller;
+    if (controller == null) return;
+
+    _undo.breakSegment();
+    final oldDisplay = controller.text;
+    final selection = controller.selection;
+    final start = selection.isValid ? selection.start : oldDisplay.length;
+    final end = selection.isValid ? selection.end : oldDisplay.length;
+    final newDisplay = oldDisplay.replaceRange(start, end, text);
+    final newIds = InlineNoteController.idsAfterEdit(
+      oldDisplay: oldDisplay,
+      newDisplay: newDisplay,
+      ids: _imageIds,
+    );
+
+    _undo.record((display: oldDisplay, ids: _imageIds));
+    setState(() {
+      _applySnapshot(
+        (display: newDisplay, ids: newIds),
+        moveCursorToEnd: false,
+      );
+      controller.selection = TextSelection.collapsed(
+        offset: start + text.length,
+      );
+    });
+    unawaited(_save());
   }
 
   /// 在光标处放一个图片占位符，并且让它独占一行。
@@ -694,7 +803,8 @@ class _NoteEditPageState extends State<NoteEditPage> {
           expands: true,
           textAlignVertical: TextAlignVertical.top,
           keyboardType: TextInputType.multiline,
-          style: const TextStyle(fontSize: 16, height: 1.6),
+          style: _bodyStyle,
+          strutStyle: _bodyStrut,
           decoration: const InputDecoration(
             border: InputBorder.none,
             hintText: '写点什么…',
