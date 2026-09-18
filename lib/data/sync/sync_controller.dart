@@ -36,6 +36,7 @@ class SyncController extends ChangeNotifier {
   DateTime? _lastSyncedAt;
 
   StreamSubscription<RemoteNote>? _realtimeSubscription;
+  StreamSubscription<RemoteFolder>? _folderRealtimeSubscription;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   Timer? _pollTimer;
   bool _disposed = false;
@@ -51,6 +52,11 @@ class SyncController extends ChangeNotifier {
       onError: (_) {
         // 实时通道断开不影响正确性，定时兜底会把数据补齐。
       },
+    );
+
+    _folderRealtimeSubscription = remote.watchFolderChanges().listen(
+      _onRealtimeFolder,
+      onError: (_) {},
     );
 
     try {
@@ -98,6 +104,15 @@ class SyncController extends ChangeNotifier {
     }
   }
 
+  Future<void> _onRealtimeFolder(RemoteFolder folder) async {
+    if (_disposed) return;
+    final applied = await engine.applyFolderRealtime(folder);
+    if (applied && !_disposed) {
+      await _refreshPending();
+      notifyListeners();
+    }
+  }
+
   Future<void> _refreshPending() async {
     final count = await local.pendingCount();
     if (count == _pendingCount) return;
@@ -119,6 +134,7 @@ class SyncController extends ChangeNotifier {
     _disposed = true;
     _pollTimer?.cancel();
     unawaited(_realtimeSubscription?.cancel());
+    unawaited(_folderRealtimeSubscription?.cancel());
     unawaited(_connectivitySubscription?.cancel());
     super.dispose();
   }

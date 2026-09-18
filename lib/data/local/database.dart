@@ -8,6 +8,15 @@ part 'database.g.dart';
 class Notes extends Table {
   TextColumn get id => text()();
   TextColumn get body => text().withDefault(const Constant(''))();
+
+  /// 所属目录，空表示未分类。
+  TextColumn get folderId => text().nullable()();
+
+  /// 加锁标记与口令摘要。锁只是界面层的一道门，正文始终是明文。
+  BoolColumn get locked => boolean().withDefault(const Constant(false))();
+  TextColumn get passphraseHash => text().nullable()();
+  TextColumn get passphraseSalt => text().nullable()();
+
   IntColumn get version => integer().withDefault(const Constant(1))();
   IntColumn get baseVersion => integer().withDefault(const Constant(0))();
   DateTimeColumn get createdAt => dateTime()();
@@ -22,7 +31,43 @@ class Notes extends Table {
   Set<Column> get primaryKey => {id};
 }
 
-/// 同步用的零碎状态：本机标识、上次拉取到的服务端时间水位。
+/// 本地目录镜像。同步状态的含义与笔记一致。
+class Folders extends Table {
+  TextColumn get id => text()();
+  TextColumn get name => text().withDefault(const Constant('新目录'))();
+  IntColumn get version => integer().withDefault(const Constant(1))();
+  IntColumn get baseVersion => integer().withDefault(const Constant(0))();
+  DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get updatedAt => dateTime()();
+  DateTimeColumn get serverUpdatedAt => dateTime().nullable()();
+  DateTimeColumn get deletedAt => dateTime().nullable()();
+  BoolColumn get dirty => boolean().withDefault(const Constant(false))();
+  BoolColumn get isNew => boolean().withDefault(const Constant(false))();
+  TextColumn get lastDeviceId => text().nullable()();
+
+  @override
+  Set<Column> get primaryKey => {id};
+}
+
+/// 本地图片元数据。文件本体在应用目录的 `images/<id>.jpg`。
+///
+/// 图片内容不可变，所以没有版本号：只要有 [dirty] 就说明文件还没传上去。
+class NoteImages extends Table {
+  TextColumn get id => text()();
+  TextColumn get storagePath => text()();
+  IntColumn get byteSize => integer().withDefault(const Constant(0))();
+  IntColumn get width => integer().nullable()();
+  IntColumn get height => integer().nullable()();
+  DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get updatedAt => dateTime()();
+  DateTimeColumn get deletedAt => dateTime().nullable()();
+  BoolColumn get dirty => boolean().withDefault(const Constant(false))();
+
+  @override
+  Set<Column> get primaryKey => {id};
+}
+
+/// 同步用的零碎状态：本机标识、三张表各自的拉取水位。
 class SyncMetaEntries extends Table {
   TextColumn get key => text()();
   TextColumn get value => text()();
@@ -31,12 +76,32 @@ class SyncMetaEntries extends Table {
   Set<Column> get primaryKey => {key};
 }
 
-@DriftDatabase(tables: [Notes, SyncMetaEntries])
+@DriftDatabase(tables: [Notes, Folders, NoteImages, SyncMetaEntries])
 class AppDatabase extends _$AppDatabase {
   /// 数据库文件按账号分开，换账号登录时不会看到上一个账号的笔记。
   AppDatabase([String name = 'sync_notes'])
     : super(driftDatabase(name: name));
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+    onCreate: (m) async {
+      await m.createAll();
+    },
+    onUpgrade: (m, from, to) async {
+      // 从 v1 升到 v2：加目录、图片两张表，以及笔记上的目录归属和加锁字段。
+      // 这里刻意不做任何删除动作——升级失败就直接抛错，
+      // 让用户看到问题，而不是悄悄把已有笔记抹掉。
+      if (from < 2) {
+        await m.createTable(folders);
+        await m.createTable(noteImages);
+        await m.addColumn(notes, notes.folderId);
+        await m.addColumn(notes, notes.locked);
+        await m.addColumn(notes, notes.passphraseHash);
+        await m.addColumn(notes, notes.passphraseSalt);
+      }
+    },
+  );
 }

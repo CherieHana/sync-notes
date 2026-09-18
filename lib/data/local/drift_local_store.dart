@@ -1,4 +1,8 @@
+import 'dart:io';
+
 import 'package:drift/drift.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models.dart';
@@ -10,10 +14,17 @@ class DriftLocalStore implements LocalStore {
   DriftLocalStore(this._db);
 
   static const _keyDeviceId = 'device_id';
-  static const _keyLastPulledAt = 'last_pulled_at';
+  static const _keyNotesPulledAt = 'last_pulled_at';
+  static const _keyFoldersPulledAt = 'last_pulled_folders_at';
+  static const _keyImagesPulledAt = 'last_pulled_images_at';
 
   final AppDatabase _db;
   String? _cachedDeviceId;
+  Future<Directory>? _imageDir;
+
+  // ---------------------------------------------------------------------
+  // 笔记读取
+  // ---------------------------------------------------------------------
 
   @override
   Stream<List<LocalNote>> watchVisibleNotes() {
@@ -24,6 +35,14 @@ class DriftLocalStore implements LocalStore {
   }
 
   @override
+  Future<List<LocalNote>> allVisibleNotes() async {
+    final query = _db.select(_db.notes)
+      ..where((t) => t.deletedAt.isNull());
+    final rows = await query.get();
+    return rows.map(_toLocal).toList();
+  }
+
+  @override
   Future<LocalNote?> findById(String id) async {
     final row = await (_db.select(
       _db.notes,
@@ -31,46 +50,29 @@ class DriftLocalStore implements LocalStore {
     return row == null ? null : _toLocal(row);
   }
 
+  // ---------------------------------------------------------------------
+  // 目录读取
+  // ---------------------------------------------------------------------
+
   @override
-  Future<List<LocalNote>> pendingNotes() async {
-    final query = _db.select(_db.notes)
-      ..where((t) => t.dirty.equals(true))
-      ..orderBy([(t) => OrderingTerm.asc(t.updatedAt)]);
-    final rows = await query.get();
-    return rows.map(_toLocal).toList();
+  Stream<List<LocalFolder>> watchVisibleFolders() {
+    final query = _db.select(_db.folders)
+      ..where((t) => t.deletedAt.isNull())
+      ..orderBy([(t) => OrderingTerm.asc(t.createdAt)]);
+    return query.watch().map((rows) => rows.map(_toLocalFolder).toList());
   }
 
   @override
-  Future<int> pendingCount() async {
-    final count = _db.notes.id.count();
-    final query = _db.selectOnly(_db.notes)
-      ..addColumns([count])
-      ..where(_db.notes.dirty.equals(true));
-    final row = await query.getSingle();
-    return row.read(count) ?? 0;
+  Future<LocalFolder?> findFolderById(String id) async {
+    final row = await (_db.select(
+      _db.folders,
+    )..where((t) => t.id.equals(id))).getSingleOrNull();
+    return row == null ? null : _toLocalFolder(row);
   }
 
-  @override
-  Future<DateTime?> getLastPulledAt() async {
-    final value = await _getMeta(_keyLastPulledAt);
-    return value == null ? null : DateTime.parse(value).toUtc();
-  }
-
-  @override
-  Future<void> setLastPulledAt(DateTime value) =>
-      _setMeta(_keyLastPulledAt, value.toUtc().toIso8601String());
-
-  @override
-  Future<String> deviceId() async {
-    final cached = _cachedDeviceId;
-    if (cached != null) return cached;
-    var value = await _getMeta(_keyDeviceId);
-    if (value == null) {
-      value = const Uuid().v4();
-      await _setMeta(_keyDeviceId, value);
-    }
-    return _cachedDeviceId = value;
-  }
+  // ---------------------------------------------------------------------
+  // 本地编辑
+  // ---------------------------------------------------------------------
 
   @override
   Future<void> createNote(LocalNote note) async {
@@ -80,6 +82,10 @@ class DriftLocalStore implements LocalStore {
           NotesCompanion.insert(
             id: note.id,
             body: Value(note.body),
+            folderId: Value(note.folderId),
+            locked: Value(note.locked),
+            passphraseHash: Value(note.passphraseHash),
+            passphraseSalt: Value(note.passphraseSalt),
             version: Value(note.version),
             baseVersion: Value(note.baseVersion),
             createdAt: note.createdAt,
@@ -120,6 +126,300 @@ class DriftLocalStore implements LocalStore {
   }
 
   @override
+  Future<void> restore({required String id, required DateTime now}) async {
+    await (_db.update(_db.notes)..where((t) => t.id.equals(id))).write(
+      NotesCompanion(
+        deletedAt: const Value(null),
+        updatedAt: Value(now),
+        dirty: const Value(true),
+      ),
+    );
+  }
+
+  @override
+  Future<void> setNoteFolder({
+    required String id,
+    required String? folderId,
+    required DateTime now,
+  }) async {
+    await (_db.update(_db.notes)..where((t) => t.id.equals(id))).write(
+      NotesCompanion(
+        folderId: Value(folderId),
+        updatedAt: Value(now),
+        dirty: const Value(true),
+      ),
+    );
+  }
+
+  @override
+  Future<void> setNoteLock({
+    required String id,
+    required bool locked,
+    required String? hash,
+    required String? salt,
+    required DateTime now,
+  }) async {
+    await (_db.update(_db.notes)..where((t) => t.id.equals(id))).write(
+      NotesCompanion(
+        locked: Value(locked),
+        passphraseHash: Value(hash),
+        passphraseSalt: Value(salt),
+        updatedAt: Value(now),
+        dirty: const Value(true),
+      ),
+    );
+  }
+
+  @override
+  Future<void> createFolder(LocalFolder folder) async {
+    await _db
+        .into(_db.folders)
+        .insert(
+          FoldersCompanion.insert(
+            id: folder.id,
+            name: Value(folder.name),
+            version: Value(folder.version),
+            baseVersion: Value(folder.baseVersion),
+            createdAt: folder.createdAt,
+            updatedAt: folder.updatedAt,
+            serverUpdatedAt: Value(folder.serverUpdatedAt),
+            deletedAt: Value(folder.deletedAt),
+            dirty: Value(folder.dirty),
+            isNew: Value(folder.isNew),
+            lastDeviceId: Value(folder.lastDeviceId),
+          ),
+        );
+  }
+
+  @override
+  Future<void> renameFolder({
+    required String id,
+    required String name,
+    required DateTime now,
+  }) async {
+    await (_db.update(_db.folders)..where((t) => t.id.equals(id))).write(
+      FoldersCompanion(
+        name: Value(name),
+        updatedAt: Value(now),
+        dirty: const Value(true),
+      ),
+    );
+  }
+
+  @override
+  Future<void> softDeleteFolder({
+    required String id,
+    required DateTime now,
+  }) async {
+    await _db.transaction(() async {
+      // 目录删掉之后里面的笔记回到「未分类」，并且要标脏让另一端也同步到。
+      await (_db.update(_db.notes)..where((t) => t.folderId.equals(id))).write(
+        NotesCompanion(
+          folderId: const Value(null),
+          updatedAt: Value(now),
+          dirty: const Value(true),
+        ),
+      );
+      await (_db.update(_db.folders)..where((t) => t.id.equals(id))).write(
+        FoldersCompanion(
+          deletedAt: Value(now),
+          updatedAt: Value(now),
+          dirty: const Value(true),
+        ),
+      );
+    });
+  }
+
+  @override
+  Future<void> createImage(LocalImage image) async {
+    await _db
+        .into(_db.noteImages)
+        .insert(
+          NoteImagesCompanion.insert(
+            id: image.id,
+            storagePath: image.storagePath,
+            byteSize: Value(image.byteSize),
+            width: Value(image.width),
+            height: Value(image.height),
+            createdAt: image.createdAt,
+            updatedAt: image.updatedAt,
+            deletedAt: Value(image.deletedAt),
+            dirty: Value(image.dirty),
+          ),
+        );
+  }
+
+  @override
+  Future<void> softDeleteImage({
+    required String id,
+    required DateTime now,
+  }) async {
+    await (_db.update(_db.noteImages)..where((t) => t.id.equals(id))).write(
+      NoteImagesCompanion(
+        deletedAt: Value(now),
+        updatedAt: Value(now),
+        dirty: const Value(true),
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // 待推送
+  // ---------------------------------------------------------------------
+
+  @override
+  Future<List<LocalNote>> pendingNotes() async {
+    final query = _db.select(_db.notes)
+      ..where((t) => t.dirty.equals(true))
+      ..orderBy([(t) => OrderingTerm.asc(t.updatedAt)]);
+    final rows = await query.get();
+    return rows.map(_toLocal).toList();
+  }
+
+  @override
+  Future<List<LocalFolder>> pendingFolders() async {
+    final query = _db.select(_db.folders)
+      ..where((t) => t.dirty.equals(true))
+      ..orderBy([(t) => OrderingTerm.asc(t.updatedAt)]);
+    final rows = await query.get();
+    return rows.map(_toLocalFolder).toList();
+  }
+
+  @override
+  Future<List<LocalImage>> pendingImages() async {
+    final query = _db.select(_db.noteImages)
+      ..where((t) => t.dirty.equals(true))
+      ..orderBy([(t) => OrderingTerm.asc(t.createdAt)]);
+    final rows = await query.get();
+    return rows.map(_toLocalImage).toList();
+  }
+
+  @override
+  Future<List<LocalImage>> allImages() async {
+    final query = _db.select(_db.noteImages)
+      ..where((t) => t.deletedAt.isNull());
+    final rows = await query.get();
+    return rows.map(_toLocalImage).toList();
+  }
+
+  @override
+  Future<List<LocalImage>> deletedImages() async {
+    final query = _db.select(_db.noteImages)
+      ..where((t) => t.deletedAt.isNotNull());
+    final rows = await query.get();
+    return rows.map(_toLocalImage).toList();
+  }
+
+  @override
+  Future<LocalImage?> findImageById(String id) async {
+    final row = await (_db.select(
+      _db.noteImages,
+    )..where((t) => t.id.equals(id))).getSingleOrNull();
+    return row == null ? null : _toLocalImage(row);
+  }
+
+  // ---------------------------------------------------------------------
+  // 图片文件本体
+  // ---------------------------------------------------------------------
+
+  Future<Directory> _imagesDirectory() {
+    return _imageDir ??= () async {
+      final docs = await getApplicationDocumentsDirectory();
+      final dir = Directory(p.join(docs.path, 'images'));
+      if (!dir.existsSync()) dir.createSync(recursive: true);
+      return dir;
+    }();
+  }
+
+  @override
+  Future<String> imageFilePath(String id) async {
+    final dir = await _imagesDirectory();
+    return p.join(dir.path, '$id.jpg');
+  }
+
+  @override
+  Future<bool> imageFileExists(String id) async {
+    return File(await imageFilePath(id)).existsSync();
+  }
+
+  @override
+  Future<void> writeImageFile(String id, List<int> bytes) async {
+    final file = File(await imageFilePath(id));
+    await file.parent.create(recursive: true);
+    await file.writeAsBytes(bytes, flush: true);
+  }
+
+  @override
+  Future<List<int>?> readImageFile(String id) async {
+    final file = File(await imageFilePath(id));
+    if (!file.existsSync()) return null;
+    return file.readAsBytes();
+  }
+
+  @override
+  Future<void> deleteImageFile(String id) async {
+    final file = File(await imageFilePath(id));
+    if (file.existsSync()) await file.delete();
+  }
+
+  @override
+  Future<int> pendingCount() async {
+    Future<int> countDirty(TableInfo table, Column<bool> flag) async {
+      final counter = table.$columns.first.count();
+      final query = _db.selectOnly(table)
+        ..addColumns([counter])
+        ..where(flag.equals(true));
+      final row = await query.getSingle();
+      return row.read(counter) ?? 0;
+    }
+
+    return await countDirty(_db.notes, _db.notes.dirty) +
+        await countDirty(_db.folders, _db.folders.dirty) +
+        await countDirty(_db.noteImages, _db.noteImages.dirty);
+  }
+
+  // ---------------------------------------------------------------------
+  // 水位
+  // ---------------------------------------------------------------------
+
+  @override
+  Future<DateTime?> getLastPulledAt() => _getTime(_keyNotesPulledAt);
+
+  @override
+  Future<void> setLastPulledAt(DateTime value) =>
+      _setTime(_keyNotesPulledAt, value);
+
+  @override
+  Future<DateTime?> getFoldersPulledAt() => _getTime(_keyFoldersPulledAt);
+
+  @override
+  Future<void> setFoldersPulledAt(DateTime value) =>
+      _setTime(_keyFoldersPulledAt, value);
+
+  @override
+  Future<DateTime?> getImagesPulledAt() => _getTime(_keyImagesPulledAt);
+
+  @override
+  Future<void> setImagesPulledAt(DateTime value) =>
+      _setTime(_keyImagesPulledAt, value);
+
+  @override
+  Future<String> deviceId() async {
+    final cached = _cachedDeviceId;
+    if (cached != null) return cached;
+    var value = await _getMeta(_keyDeviceId);
+    if (value == null) {
+      value = const Uuid().v4();
+      await _setMeta(_keyDeviceId, value);
+    }
+    return _cachedDeviceId = value;
+  }
+
+  // ---------------------------------------------------------------------
+  // 同步回写
+  // ---------------------------------------------------------------------
+
+  @override
   Future<void> applyRemote(RemoteNote note) async {
     await _db.transaction(() async {
       final existing = await (_db.select(
@@ -134,6 +434,10 @@ class DriftLocalStore implements LocalStore {
             NotesCompanion(
               id: Value(note.id),
               body: Value(note.body),
+              folderId: Value(note.folderId),
+              locked: Value(note.locked),
+              passphraseHash: Value(note.passphraseHash),
+              passphraseSalt: Value(note.passphraseSalt),
               version: Value(note.version),
               baseVersion: Value(note.version),
               createdAt: Value(note.createdAt),
@@ -149,9 +453,78 @@ class DriftLocalStore implements LocalStore {
   }
 
   @override
+  Future<void> applyRemoteFolder(RemoteFolder folder) async {
+    await _db.transaction(() async {
+      final existing = await (_db.select(
+        _db.folders,
+      )..where((t) => t.id.equals(folder.id))).getSingleOrNull();
+      if (existing != null && folder.version <= existing.baseVersion) return;
+
+      await _db
+          .into(_db.folders)
+          .insertOnConflictUpdate(
+            FoldersCompanion(
+              id: Value(folder.id),
+              name: Value(folder.name),
+              version: Value(folder.version),
+              baseVersion: Value(folder.version),
+              createdAt: Value(folder.createdAt),
+              updatedAt: Value(folder.updatedAt),
+              serverUpdatedAt: Value(folder.updatedAt),
+              deletedAt: Value(folder.deletedAt),
+              dirty: const Value(false),
+              isNew: const Value(false),
+              lastDeviceId: Value(folder.lastDeviceId),
+            ),
+          );
+    });
+  }
+
+  @override
+  Future<void> applyRemoteImage(RemoteImage image) async {
+    await _db
+        .into(_db.noteImages)
+        .insertOnConflictUpdate(
+          NoteImagesCompanion(
+            id: Value(image.id),
+            storagePath: Value(image.storagePath),
+            byteSize: Value(image.byteSize),
+            width: Value(image.width),
+            height: Value(image.height),
+            createdAt: Value(image.createdAt),
+            updatedAt: Value(image.updatedAt),
+            deletedAt: Value(image.deletedAt),
+            dirty: const Value(false),
+          ),
+        );
+  }
+
+  @override
   Future<void> hardDelete(String id) async {
     await (_db.delete(_db.notes)..where((t) => t.id.equals(id))).go();
   }
+
+  @override
+  Future<void> hardDeleteFolder(String id) async {
+    await (_db.delete(_db.folders)..where((t) => t.id.equals(id))).go();
+  }
+
+  @override
+  Future<void> hardDeleteImage(String id) async {
+    await (_db.delete(_db.noteImages)..where((t) => t.id.equals(id))).go();
+  }
+
+  // ---------------------------------------------------------------------
+  // 内部工具
+  // ---------------------------------------------------------------------
+
+  Future<DateTime?> _getTime(String key) async {
+    final value = await _getMeta(key);
+    return value == null ? null : DateTime.parse(value).toUtc();
+  }
+
+  Future<void> _setTime(String key, DateTime value) =>
+      _setMeta(key, value.toUtc().toIso8601String());
 
   Future<String?> _getMeta(String key) async {
     final row = await (_db.select(
@@ -174,6 +547,10 @@ class DriftLocalStore implements LocalStore {
   LocalNote _toLocal(Note row) => LocalNote(
     id: row.id,
     body: row.body,
+    folderId: row.folderId,
+    locked: row.locked,
+    passphraseHash: row.passphraseHash,
+    passphraseSalt: row.passphraseSalt,
     version: row.version,
     baseVersion: row.baseVersion,
     createdAt: row.createdAt,
@@ -183,5 +560,31 @@ class DriftLocalStore implements LocalStore {
     dirty: row.dirty,
     isNew: row.isNew,
     lastDeviceId: row.lastDeviceId,
+  );
+
+  LocalFolder _toLocalFolder(Folder row) => LocalFolder(
+    id: row.id,
+    name: row.name,
+    version: row.version,
+    baseVersion: row.baseVersion,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    serverUpdatedAt: row.serverUpdatedAt,
+    deletedAt: row.deletedAt,
+    dirty: row.dirty,
+    isNew: row.isNew,
+    lastDeviceId: row.lastDeviceId,
+  );
+
+  LocalImage _toLocalImage(NoteImage row) => LocalImage(
+    id: row.id,
+    storagePath: row.storagePath,
+    byteSize: row.byteSize,
+    width: row.width,
+    height: row.height,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    deletedAt: row.deletedAt,
+    dirty: row.dirty,
   );
 }

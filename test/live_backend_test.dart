@@ -94,6 +94,7 @@ void main() {
     for (final client in [userA, userB]) {
       try {
         await client.from('notes').delete().neq('id', _zeroUuid);
+        await client.from('folders').delete().neq('id', _zeroUuid);
       } catch (_) {
         // 清理失败不影响测试结论
       }
@@ -206,5 +207,54 @@ void main() {
     // 但 A 自己能看见
     final seenByA = await remoteA.fetchChangedSince(null);
     expect(seenByA.where((n) => n.id == id), hasLength(1));
+  });
+
+  test('目录在两端之间同步，删目录时笔记回到未分类', () async {
+    final remote = SupabaseRemoteApi(userA);
+    final deviceA = FakeLocalStore()..device = 'live-folder-a';
+    final deviceB = FakeLocalStore()..device = 'live-folder-b';
+    final engineA = SyncEngine(local: deviceA, remote: remote);
+    final engineB = SyncEngine(local: deviceB, remote: remote);
+
+    final folderId = const Uuid().v4();
+    final noteId = const Uuid().v4();
+    final now = DateTime.now();
+
+    // A 建目录并放一篇笔记进去
+    deviceA.folders[folderId] = LocalFolder(
+      id: folderId,
+      name: '联调测试目录',
+      version: 1,
+      baseVersion: 0,
+      createdAt: now,
+      updatedAt: now,
+      dirty: true,
+      isNew: true,
+    );
+    deviceA.notes[noteId] = LocalNote(
+      id: noteId,
+      body: '归到目录里的笔记',
+      version: 1,
+      baseVersion: 0,
+      createdAt: now,
+      updatedAt: now,
+      folderId: folderId,
+      dirty: true,
+      isNew: true,
+    );
+    await engineA.syncNow();
+
+    // B 拉到目录和归属
+    await engineB.syncNow();
+    expect(deviceB.folders[folderId]?.name, '联调测试目录');
+    expect(deviceB.notes[noteId]?.folderId, folderId);
+
+    // A 删目录，B 那边笔记回到未分类
+    await deviceA.softDeleteFolder(id: folderId, now: DateTime.now());
+    await engineA.syncNow();
+    await engineB.syncNow();
+
+    expect(deviceB.folders[folderId]!.isDeleted, isTrue);
+    expect(deviceB.notes[noteId]!.folderId, isNull);
   });
 }

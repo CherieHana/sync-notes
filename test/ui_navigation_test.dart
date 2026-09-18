@@ -14,6 +14,7 @@ import 'package:sync_notes/app_services.dart';
 import 'package:sync_notes/data/sync/sync_controller.dart';
 import 'package:sync_notes/data/sync/sync_engine.dart';
 import 'package:sync_notes/main.dart';
+import 'package:sync_notes/services/note_lock.dart';
 import 'package:sync_notes/ui/note_edit_page.dart';
 import 'package:sync_notes/ui/notes_list_page.dart';
 
@@ -41,7 +42,38 @@ Future<void> pumpApp(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
+/// 直接把依赖挂到树上，方便测试里预置数据。
+Future<void> pumpWithServices(
+  WidgetTester tester,
+  AppServices services,
+) async {
+  await tester.pumpWidget(
+    AppScope(
+      services: services,
+      child: const MaterialApp(home: NotesListPage()),
+    ),
+  );
+  await tester.pumpAndSettle();
+}
+
 void main() {
+  // PBKDF2 内部用 Future.delayed 让出线程，而 widget 测试的虚拟时钟不会自己
+  // 往前走，所以这里在 fake async 之外先把口令摘要算好。
+  late String lockSalt;
+  late String lockHash;
+
+  setUpAll(() async {
+    lockSalt = NoteLock.newSalt();
+    lockHash = await NoteLock.hash('abcd', lockSalt);
+  });
+
+  /// 推进虚拟时钟，让 PBKDF2 里那些让出线程的延时跑完。
+  Future<void> settleCrypto(WidgetTester tester) async {
+    for (var i = 0; i < 60; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+  }
+
   testWidgets('新建笔记后编辑页能正常渲染，不是一片灰底', (tester) async {
     await pumpApp(tester);
     expect(find.byType(NotesListPage), findsOneWidget);
@@ -84,5 +116,107 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('退出登录'), findsOneWidget);
+  });
+
+  testWidgets('新建目录后顶部出现对应的标签', (tester) async {
+    final services = buildTestServices('ui-test-user');
+    await pumpWithServices(tester, services);
+
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('新建目录'));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField).last, '工作');
+    await tester.tap(find.text('确定'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('工作'), findsWidgets);
+    final folders = await services.local.watchVisibleFolders().first;
+    expect(folders.map((f) => f.name), contains('工作'));
+  });
+
+  testWidgets('左滑删除后能点撤销把笔记找回来', (tester) async {
+    final services = buildTestServices('ui-test-user');
+    await services.local.createNote(
+      localNote(id: 'n1', body: '别删我', version: 1, baseVersion: 1, dirty: false),
+    );
+    await pumpWithServices(tester, services);
+
+    expect(find.text('别删我'), findsOneWidget);
+
+    await tester.drag(find.text('别删我'), const Offset(-500, 0));
+    await tester.pumpAndSettle();
+
+    // 列表里没了，但提示条给了反悔的机会。
+    expect(find.text('撤销'), findsOneWidget);
+    expect((await services.local.findById('n1'))!.isDeleted, isTrue);
+
+    await tester.tap(find.text('撤销'));
+    await tester.pumpAndSettle();
+
+    expect((await services.local.findById('n1'))!.isDeleted, isFalse);
+    expect(find.text('别删我'), findsOneWidget);
+  });
+
+  testWidgets('加锁的笔记在列表里只露出标题和锁标记', (tester) async {
+    final services = buildTestServices('ui-test-user');
+    await services.local.createNote(
+      localNote(
+        id: 'locked',
+        body: '私密标题\n这里是不该出现在列表里的正文',
+        version: 1,
+        baseVersion: 1,
+        dirty: false,
+        locked: true,
+        passphraseHash: lockHash,
+        passphraseSalt: lockSalt,
+      ),
+    );
+
+    await pumpWithServices(tester, services);
+
+    expect(find.text('私密标题'), findsOneWidget);
+    expect(find.text('已加密，打开需要口令'), findsOneWidget);
+    expect(find.textContaining('不该出现在列表里'), findsNothing);
+  });
+
+  testWidgets('打开加锁笔记先要口令，且口令框不做遮蔽', (tester) async {
+    final services = buildTestServices('ui-test-user');
+    await services.local.createNote(
+      localNote(
+        id: 'locked',
+        body: '私密标题\n正文',
+        version: 1,
+        baseVersion: 1,
+        dirty: false,
+        locked: true,
+        passphraseHash: lockHash,
+        passphraseSalt: lockSalt,
+      ),
+    );
+
+    await pumpWithServices(tester, services);
+    await tester.tap(find.text('私密标题'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('这篇笔记加了锁，输入口令才能打开'), findsOneWidget);
+    final field = tester.widget<TextField>(find.byType(TextField));
+    expect(field.obscureText, isFalse, reason: '口令要看得见，避免打错');
+
+    // 输错了不开门
+    await tester.enterText(find.byType(TextField), 'wrong');
+    await tester.tap(find.text('解锁'));
+    await settleCrypto(tester);
+    await tester.pumpAndSettle();
+    expect(find.text('口令不对'), findsOneWidget);
+
+    // 输对了才进编辑器
+    await tester.enterText(find.byType(TextField), 'abcd');
+    await tester.tap(find.text('解锁'));
+    await settleCrypto(tester);
+    await tester.pumpAndSettle();
+    expect(find.text('这篇笔记加了锁，输入口令才能打开'), findsNothing);
+    expect(find.textContaining('正文'), findsWidgets);
   });
 }

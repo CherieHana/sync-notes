@@ -34,4 +34,22 @@ void main() {
       '2025年3月2日',
     );
   });
+
+  test('能从正文里挑出全部图片 id', () {
+    const id1 = '11111111-1111-1111-1111-111111111111';
+    const id2 = '22222222-2222-2222-2222-222222222222';
+    final body = '标题\n[[img:$id1]]\n正文\n[[img:$id2]]';
+    expect(imageIdsIn(body).toList(), [id1, id2]);
+  });
+
+  test('图片标记的生成与解析是对称的', () {
+    const id = '33333333-3333-3333-3333-333333333333';
+    expect(imageMarker(id), '[[img:$id]]');
+    expect(imageIdsIn(imageMarker(id)).single, id);
+  });
+
+  test('不像标记的文本不会被当成图片', () {
+    expect(imageIdsIn('普通正文，没有图片').isEmpty, isTrue);
+    expect(imageIdsIn('[[img:不是uuid]]').isEmpty, isTrue);
+  });
 }

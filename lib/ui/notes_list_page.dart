@@ -1,13 +1,20 @@
 import 'dart:async';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 
 import '../app_services.dart';
 import '../data/local/local_store.dart';
 import '../data/sync/sync_controller.dart';
+import '../services/file_import.dart';
 import '../util/note_text.dart';
 import 'note_edit_page.dart';
+import 'widgets/text_prompt_dialog.dart';
+
+/// 顶部目录标签里代表「全部」和「未分类」的两个固定项。
+const String _allTab = '__all__';
+const String _uncategorizedTab = '__none__';
 
 /// 笔记列表。数据源是本地库的 watch 流，所以断网也有完整内容，
 /// 远端变化会在同步写入本地后自动反映到这里。
@@ -23,14 +30,23 @@ class _NotesListPageState extends State<NotesListPage> {
   bool _searching = false;
   String _query = '';
 
+  /// 当前选中的目录标签：[_allTab]、[_uncategorizedTab] 或某个目录 id。
+  String _tab = _allTab;
+
   @override
   void dispose() {
     _search.dispose();
     super.dispose();
   }
 
+  AppServices get _services => AppScope.of(context);
+
+  // ---------------------------------------------------------------------
+  // 笔记
+  // ---------------------------------------------------------------------
+
   Future<void> _createNote() async {
-    final services = AppScope.of(context);
+    final services = _services;
     final now = DateTime.now();
     final id = const Uuid().v4();
 
@@ -42,6 +58,7 @@ class _NotesListPageState extends State<NotesListPage> {
         baseVersion: 0,
         createdAt: now,
         updatedAt: now,
+        folderId: _folderForNewNote,
         dirty: true,
         isNew: true,
       ),
@@ -55,14 +72,14 @@ class _NotesListPageState extends State<NotesListPage> {
     unawaited(services.sync.sync());
   }
 
-  Future<void> _delete(LocalNote note) async {
-    final services = AppScope.of(context);
-    await services.local.softDelete(id: note.id, now: DateTime.now());
-    unawaited(services.sync.sync());
+  /// 在某个目录标签下新建的笔记直接落进那个目录。
+  String? get _folderForNewNote {
+    if (_tab == _allTab || _tab == _uncategorizedTab) return null;
+    return _tab;
   }
 
   Future<void> _open(LocalNote note) async {
-    final services = AppScope.of(context);
+    final services = _services;
     await Navigator.of(context).push(
       MaterialPageRoute<void>(builder: (_) => NoteEditPage(noteId: note.id)),
     );
@@ -70,8 +87,245 @@ class _NotesListPageState extends State<NotesListPage> {
     unawaited(services.sync.sync());
   }
 
+  /// 左滑删除，底部给 5 秒的反悔机会。
+  Future<void> _delete(LocalNote note) async {
+    final services = _services;
+    final messenger = ScaffoldMessenger.of(context);
+    await services.local.softDelete(id: note.id, now: DateTime.now());
+
+    messenger
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('已删除「${noteTitle(note.body)}」'),
+          duration: const Duration(seconds: 5),
+          action: SnackBarAction(
+            label: '撤销',
+            onPressed: () {
+              unawaited(() async {
+                await services.local.restore(
+                  id: note.id,
+                  now: DateTime.now(),
+                );
+                unawaited(services.sync.sync());
+              }());
+            },
+          ),
+        ),
+      );
+    unawaited(services.sync.sync());
+  }
+
+  Future<void> _moveNote(LocalNote note, List<LocalFolder> folders) async {
+    final services = _services;
+    final chosen = await showModalBottomSheet<String?>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            const ListTile(
+              title: Text('移动到…', style: TextStyle(fontWeight: FontWeight.w600)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.inbox_outlined),
+              title: const Text('未分类'),
+              selected: note.folderId == null,
+              onTap: () => Navigator.of(context).pop(_uncategorizedTab),
+            ),
+            for (final folder in folders)
+              ListTile(
+                leading: const Icon(Icons.folder_outlined),
+                title: Text(folder.name),
+                selected: note.folderId == folder.id,
+                onTap: () => Navigator.of(context).pop(folder.id),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (chosen == null || !mounted) return;
+
+    await services.local.setNoteFolder(
+      id: note.id,
+      folderId: chosen == _uncategorizedTab ? null : chosen,
+      now: DateTime.now(),
+    );
+    unawaited(services.sync.sync());
+  }
+
+  // ---------------------------------------------------------------------
+  // 目录
+  // ---------------------------------------------------------------------
+
+  Future<void> _createFolder() async {
+    final services = _services;
+    final name = await _askFolderName(title: '新建目录');
+    if (name == null || !mounted) return;
+
+    final now = DateTime.now();
+    final id = const Uuid().v4();
+    await services.local.createFolder(
+      LocalFolder(
+        id: id,
+        name: name,
+        version: 1,
+        baseVersion: 0,
+        createdAt: now,
+        updatedAt: now,
+        dirty: true,
+        isNew: true,
+      ),
+    );
+    if (mounted) setState(() => _tab = id);
+    unawaited(services.sync.sync());
+  }
+
+  Future<void> _folderActions(LocalFolder folder) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            ListTile(
+              title: Text(
+                folder.name,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.edit_outlined),
+              title: const Text('重命名'),
+              onTap: () => Navigator.of(context).pop('rename'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: const Text('删除目录'),
+              onTap: () => Navigator.of(context).pop('delete'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) return;
+
+    if (action == 'rename') {
+      final name = await _askFolderName(title: '重命名目录', initial: folder.name);
+      if (name == null || !mounted) return;
+      await _services.local.renameFolder(
+        id: folder.id,
+        name: name,
+        now: DateTime.now(),
+      );
+      unawaited(_services.sync.sync());
+      return;
+    }
+
+    if (action == 'delete') {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('删除「${folder.name}」？'),
+          content: const Text('目录里的笔记不会被删掉，会回到「未分类」。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('删除'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+
+      await _services.local.softDeleteFolder(
+        id: folder.id,
+        now: DateTime.now(),
+      );
+      if (mounted && _tab == folder.id) setState(() => _tab = _allTab);
+      unawaited(_services.sync.sync());
+    }
+  }
+
+  Future<String?> _askFolderName({required String title, String? initial}) {
+    return TextPromptDialog.show(
+      context,
+      title: title,
+      confirmLabel: '确定',
+      hint: '目录名称',
+      initial: initial,
+    ).then((value) {
+      final trimmed = value?.trim();
+      return (trimmed == null || trimmed.isEmpty) ? null : trimmed;
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // 导入
+  // ---------------------------------------------------------------------
+
+  Future<void> _importFiles() async {
+    final services = _services;
+    final List<PlatformFile> files;
+    try {
+      files = await FileImport.pickFiles();
+    } catch (error) {
+      _toast('打不开文件选择器：$error');
+      return;
+    }
+    if (files.isEmpty || !mounted) return;
+
+    var imported = 0;
+    var hasLarge = false;
+    final failed = <String>[];
+
+    for (final file in files) {
+      try {
+        final document = await FileImport.parse(file);
+        if (document.byteSize > FileImport.largeFileBytes) hasLarge = true;
+
+        final now = DateTime.now();
+        await services.local.createNote(
+          LocalNote(
+            id: const Uuid().v4(),
+            body: document.body,
+            version: 1,
+            baseVersion: 0,
+            createdAt: now,
+            updatedAt: now,
+            folderId: _folderForNewNote,
+            dirty: true,
+            isNew: true,
+          ),
+        );
+        imported++;
+      } catch (_) {
+        failed.add(file.name);
+      }
+    }
+
+    unawaited(services.sync.sync());
+
+    final parts = <String>[];
+    if (imported > 0) parts.add('导入了 $imported 篇');
+    if (failed.isNotEmpty) parts.add('${failed.length} 个文件读不了');
+    if (hasLarge) parts.add('大文件同步会慢一些');
+    _toast(parts.isEmpty ? '没有导入任何内容' : parts.join('，'));
+  }
+
+  void _toast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
   Future<void> _confirmSignOut() async {
-    final services = AppScope.of(context);
+    final services = _services;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -97,6 +351,10 @@ class _NotesListPageState extends State<NotesListPage> {
     if (confirmed != true) return;
     await services.signOut?.call();
   }
+
+  // ---------------------------------------------------------------------
+  // 界面
+  // ---------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
@@ -131,7 +389,14 @@ class _NotesListPageState extends State<NotesListPage> {
             tooltip: '更多',
             icon: const Icon(Icons.more_vert),
             onSelected: (value) {
-              if (value == 'signOut') unawaited(_confirmSignOut());
+              switch (value) {
+                case 'folder':
+                  unawaited(_createFolder());
+                case 'import':
+                  unawaited(_importFiles());
+                case 'signOut':
+                  unawaited(_confirmSignOut());
+              }
             },
             itemBuilder: (context) => [
               if (services.accountEmail.isNotEmpty)
@@ -143,10 +408,10 @@ class _NotesListPageState extends State<NotesListPage> {
                   ),
                 ),
               const PopupMenuDivider(),
-              const PopupMenuItem<String>(
-                value: 'signOut',
-                child: Text('退出登录'),
-              ),
+              const PopupMenuItem(value: 'folder', child: Text('新建目录')),
+              const PopupMenuItem(value: 'import', child: Text('导入文件')),
+              const PopupMenuDivider(),
+              const PopupMenuItem(value: 'signOut', child: Text('退出登录')),
             ],
           ),
         ],
@@ -155,84 +420,39 @@ class _NotesListPageState extends State<NotesListPage> {
           child: SyncStatusBar(controller: services.sync),
         ),
       ),
-      body: StreamBuilder<List<LocalNote>>(
-        stream: services.local.watchVisibleNotes(),
-        builder: (context, snapshot) {
-          if (snapshot.hasError) {
-            return _CenteredHint(text: '读取本地数据出错：${snapshot.error}');
-          }
-          final notes = snapshot.data;
-          if (notes == null) {
-            return const Center(child: CircularProgressIndicator());
-          }
+      body: StreamBuilder<List<LocalFolder>>(
+        stream: services.local.watchVisibleFolders(),
+        builder: (context, folderSnapshot) {
+          final folders = folderSnapshot.data ?? const <LocalFolder>[];
+          return StreamBuilder<List<LocalNote>>(
+            stream: services.local.watchVisibleNotes(),
+            builder: (context, noteSnapshot) {
+              if (noteSnapshot.hasError) {
+                return _CenteredHint(
+                  text: '读取本地数据出错：${noteSnapshot.error}',
+                );
+              }
+              final notes = noteSnapshot.data;
+              if (notes == null) {
+                return const Center(child: CircularProgressIndicator());
+              }
 
-          final filtered = _query.isEmpty
-              ? notes
-              : notes
-                    .where(
-                      (n) =>
-                          n.body.toLowerCase().contains(_query.toLowerCase()),
-                    )
-                    .toList();
-
-          if (filtered.isEmpty) {
-            return _CenteredHint(
-              text: notes.isEmpty
-                  ? '还没有笔记，点右下角写一条'
-                  : '没有匹配「$_query」的笔记',
-            );
-          }
-
-          return ListView.separated(
-            padding: const EdgeInsets.only(bottom: 96),
-            itemCount: filtered.length,
-            separatorBuilder: (_, _) =>
-                const Divider(height: 1, indent: 16, endIndent: 16),
-            itemBuilder: (context, index) {
-              final note = filtered[index];
-              return Dismissible(
-                key: ValueKey(note.id),
-                direction: DismissDirection.endToStart,
-                background: Container(
-                  alignment: Alignment.centerRight,
-                  padding: const EdgeInsets.only(right: 24),
-                  color: Theme.of(context).colorScheme.errorContainer,
-                  child: const Icon(Icons.delete_outline),
-                ),
-                onDismissed: (_) => _delete(note),
-                child: ListTile(
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 4,
+              final visible = _filterNotes(notes, folders);
+              return Column(
+                children: [
+                  _FolderTabs(
+                    folders: folders,
+                    selected: _tab,
+                    onSelect: (tab) => setState(() => _tab = tab),
+                    onLongPress: (folder) => unawaited(_folderActions(folder)),
                   ),
-                  title: Text(
-                    noteTitle(note.body),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
+                  const Divider(height: 1),
+                  Expanded(
+                    child: visible.isEmpty
+                        ? _CenteredHint(text: _emptyHint(notes))
+                        : _buildList(visible, folders),
                   ),
-                  subtitle: Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text(
-                      notePreview(note.body),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: Theme.of(
-                          context,
-                        ).textTheme.bodySmall?.color?.withValues(alpha: 0.8),
-                      ),
-                    ),
-                  ),
-                  trailing: Text(
-                    formatListTime(note.updatedAt),
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                  onTap: () => _open(note),
-                ),
+                ],
               );
             },
           );
@@ -242,6 +462,157 @@ class _NotesListPageState extends State<NotesListPage> {
         tooltip: '新建笔记',
         onPressed: _createNote,
         child: const Icon(Icons.edit_outlined),
+      ),
+    );
+  }
+
+  String _emptyHint(List<LocalNote> all) {
+    if (_query.isNotEmpty) return '没有匹配「$_query」的笔记';
+    if (all.isEmpty) return '还没有笔记，点右下角写一条';
+    return '这个目录下还没有笔记';
+  }
+
+  List<LocalNote> _filterNotes(
+    List<LocalNote> notes,
+    List<LocalFolder> folders,
+  ) {
+    // 目录可能已经被别的设备删掉了，那种笔记一律按未分类算。
+    final aliveFolderIds = folders.map((f) => f.id).toSet();
+
+    var result = notes;
+    if (_tab == _uncategorizedTab) {
+      result = result
+          .where(
+            (n) => n.folderId == null || !aliveFolderIds.contains(n.folderId),
+          )
+          .toList();
+    } else if (_tab != _allTab) {
+      result = result.where((n) => n.folderId == _tab).toList();
+    }
+
+    if (_query.isEmpty) return result;
+    final query = _query.toLowerCase();
+    return result.where((note) {
+      // 加锁且还没解锁的笔记只按标题匹配，避免搜索把正文内容漏出去。
+      final locked =
+          note.locked && !(_services.isUnlocked(note.id));
+      if (locked) return noteTitle(note.body).toLowerCase().contains(query);
+      return note.body.toLowerCase().contains(query);
+    }).toList();
+  }
+
+  Widget _buildList(List<LocalNote> notes, List<LocalFolder> folders) {
+    return ListView.separated(
+      padding: const EdgeInsets.only(bottom: 96),
+      itemCount: notes.length,
+      separatorBuilder: (_, _) =>
+          const Divider(height: 1, indent: 16, endIndent: 16),
+      itemBuilder: (context, index) {
+        final note = notes[index];
+        final locked = note.locked && !_services.isUnlocked(note.id);
+        return Dismissible(
+          key: ValueKey(note.id),
+          direction: DismissDirection.endToStart,
+          background: Container(
+            alignment: Alignment.centerRight,
+            padding: const EdgeInsets.only(right: 24),
+            color: Theme.of(context).colorScheme.errorContainer,
+            child: const Icon(Icons.delete_outline),
+          ),
+          onDismissed: (_) => _delete(note),
+          child: ListTile(
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 4,
+            ),
+            title: Row(
+              children: [
+                if (locked) ...[
+                  const Icon(Icons.lock_outline, size: 14),
+                  const SizedBox(width: 6),
+                ],
+                Expanded(
+                  child: Text(
+                    noteTitle(note.body),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            subtitle: Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                locked ? '已加密，打开需要口令' : notePreview(note.body),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: Theme.of(
+                    context,
+                  ).textTheme.bodySmall?.color?.withValues(alpha: 0.8),
+                ),
+              ),
+            ),
+            trailing: Text(
+              formatListTime(note.updatedAt),
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            onTap: () => _open(note),
+            onLongPress: () => unawaited(_moveNote(note, folders)),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// 顶部那一排目录标签。
+class _FolderTabs extends StatelessWidget {
+  const _FolderTabs({
+    required this.folders,
+    required this.selected,
+    required this.onSelect,
+    required this.onLongPress,
+  });
+
+  final List<LocalFolder> folders;
+  final String selected;
+  final ValueChanged<String> onSelect;
+  final ValueChanged<LocalFolder> onLongPress;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 48,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        children: [
+          _chip(context, _allTab, '全部'),
+          _chip(context, _uncategorizedTab, '未分类'),
+          for (final folder in folders)
+            GestureDetector(
+              onLongPress: () => onLongPress(folder),
+              child: _chip(context, folder.id, folder.name),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _chip(BuildContext context, String value, String label) {
+    final isSelected = value == selected;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: ChoiceChip(
+        label: Text(label),
+        selected: isSelected,
+        // 长按由外层的 GestureDetector 处理，点击走这里。
+        onSelected: (_) => onSelect(value),
       ),
     );
   }

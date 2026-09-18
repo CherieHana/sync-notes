@@ -1,7 +1,14 @@
-/// 服务端一条笔记的快照。
+/// 服务端快照的公共部分。
 ///
-/// 所有时间均由服务端给出，客户端只做解析，不参与生成，
+/// 所有时间均由服务端给出，客户端只做解析、不参与生成，
 /// 这样多设备之间的时间线才是可比较的。
+DateTime? parseServerTime(Object? value) {
+  if (value == null) return null;
+  if (value is DateTime) return value.toUtc();
+  return DateTime.parse(value as String).toUtc();
+}
+
+/// 服务端一条笔记的快照。
 class RemoteNote {
   const RemoteNote({
     required this.id,
@@ -9,6 +16,10 @@ class RemoteNote {
     required this.version,
     required this.createdAt,
     required this.updatedAt,
+    this.folderId,
+    this.locked = false,
+    this.passphraseHash,
+    this.passphraseSalt,
     this.deletedAt,
     this.lastDeviceId,
   });
@@ -21,6 +32,15 @@ class RemoteNote {
   final int version;
   final DateTime createdAt;
   final DateTime updatedAt;
+
+  /// 所属目录；为空表示「未分类」，指向已被删除的目录时客户端也按未分类显示。
+  final String? folderId;
+
+  /// 是否加锁。锁只是界面层的一道门，正文在服务端始终是明文。
+  final bool locked;
+  final String? passphraseHash;
+  final String? passphraseSalt;
+
   final DateTime? deletedAt;
   final String? lastDeviceId;
 
@@ -31,9 +51,13 @@ class RemoteNote {
       id: json['id'] as String,
       body: (json['body'] as String?) ?? '',
       version: (json['version'] as num).toInt(),
-      createdAt: _parse(json['created_at'])!,
-      updatedAt: _parse(json['updated_at'])!,
-      deletedAt: _parse(json['deleted_at']),
+      createdAt: parseServerTime(json['created_at'])!,
+      updatedAt: parseServerTime(json['updated_at'])!,
+      folderId: json['folder_id'] as String?,
+      locked: (json['locked'] as bool?) ?? false,
+      passphraseHash: json['passphrase_hash'] as String?,
+      passphraseSalt: json['passphrase_salt'] as String?,
+      deletedAt: parseServerTime(json['deleted_at']),
       lastDeviceId: json['last_device_id'] as String?,
     );
   }
@@ -44,17 +68,116 @@ class RemoteNote {
     'version': version,
     'created_at': createdAt.toIso8601String(),
     'updated_at': updatedAt.toIso8601String(),
+    'folder_id': folderId,
+    'locked': locked,
+    'passphrase_hash': passphraseHash,
+    'passphrase_salt': passphraseSalt,
     'deleted_at': deletedAt?.toIso8601String(),
     'last_device_id': lastDeviceId,
   };
 
-  static DateTime? _parse(Object? value) {
-    if (value == null) return null;
-    if (value is DateTime) return value.toUtc();
-    return DateTime.parse(value as String).toUtc();
-  }
-
   @override
   String toString() =>
-      'RemoteNote($id, v$version, deleted=$isDeleted, by=$lastDeviceId)';
+      'RemoteNote($id, v$version, folder=$folderId, locked=$locked, '
+      'deleted=$isDeleted, by=$lastDeviceId)';
+}
+
+/// 服务端一个目录的快照。字段与同步语义和笔记完全一致。
+class RemoteFolder {
+  const RemoteFolder({
+    required this.id,
+    required this.name,
+    required this.version,
+    required this.createdAt,
+    required this.updatedAt,
+    this.deletedAt,
+    this.lastDeviceId,
+  });
+
+  final String id;
+  final String name;
+  final int version;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final DateTime? deletedAt;
+  final String? lastDeviceId;
+
+  bool get isDeleted => deletedAt != null;
+
+  factory RemoteFolder.fromJson(Map<String, dynamic> json) {
+    return RemoteFolder(
+      id: json['id'] as String,
+      name: (json['name'] as String?) ?? '未命名目录',
+      version: (json['version'] as num).toInt(),
+      createdAt: parseServerTime(json['created_at'])!,
+      updatedAt: parseServerTime(json['updated_at'])!,
+      deletedAt: parseServerTime(json['deleted_at']),
+      lastDeviceId: json['last_device_id'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'version': version,
+    'created_at': createdAt.toIso8601String(),
+    'updated_at': updatedAt.toIso8601String(),
+    'deleted_at': deletedAt?.toIso8601String(),
+    'last_device_id': lastDeviceId,
+  };
+
+  @override
+  String toString() => 'RemoteFolder($id, $name, v$version)';
+}
+
+/// 服务端一张图片的元数据快照。文件本体在存储桶里。
+class RemoteImage {
+  const RemoteImage({
+    required this.id,
+    required this.storagePath,
+    required this.byteSize,
+    required this.createdAt,
+    required this.updatedAt,
+    this.width,
+    this.height,
+    this.deletedAt,
+  });
+
+  final String id;
+  final String storagePath;
+  final int byteSize;
+  final int? width;
+  final int? height;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final DateTime? deletedAt;
+
+  bool get isDeleted => deletedAt != null;
+
+  factory RemoteImage.fromJson(Map<String, dynamic> json) {
+    return RemoteImage(
+      id: json['id'] as String,
+      storagePath: json['storage_path'] as String,
+      byteSize: (json['byte_size'] as num?)?.toInt() ?? 0,
+      width: (json['width'] as num?)?.toInt(),
+      height: (json['height'] as num?)?.toInt(),
+      createdAt: parseServerTime(json['created_at'])!,
+      updatedAt: parseServerTime(json['updated_at'])!,
+      deletedAt: parseServerTime(json['deleted_at']),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'storage_path': storagePath,
+    'byte_size': byteSize,
+    'width': width,
+    'height': height,
+    'created_at': createdAt.toIso8601String(),
+    'updated_at': updatedAt.toIso8601String(),
+    'deleted_at': deletedAt?.toIso8601String(),
+  };
+
+  @override
+  String toString() => 'RemoteImage($id, $storagePath, $byteSize bytes)';
 }

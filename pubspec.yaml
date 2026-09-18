@@ -39,6 +39,13 @@ dependencies:
   drift_flutter: ^0.3.1
   uuid: ^4.6.0
   connectivity_plus: ^7.3.1
+  file_picker: ^13.1.0
+  image_picker: ^1.2.3
+  image: ^4.10.1
+  fast_gbk: ^1.0.0
+  cryptography: ^2.9.0
+  path_provider: ^2.1.6
+  path: ^1.9.1
 
 dev_dependencies:
   flutter_test:

@@ -132,7 +132,7 @@ void main() {
     expect(report.pulled, 1);
     expect(local.notes['remote-1']!.body, '电脑上写的');
     expect(local.notes['remote-1']!.dirty, isFalse);
-    expect(local.lastPulledAt, DateTime.utc(2026, 3));
+    expect(local.notesPulledAt, DateTime.utc(2026, 3));
   });
 
   test('实时推送不会覆盖本地未推送的改动', () async {

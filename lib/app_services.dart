@@ -20,6 +20,7 @@ class AppServices {
     this.database,
     this.accountEmail = '',
     this.signOut,
+    this.verifyPassword,
   });
 
   factory AppServices.create(SupabaseClient client, String userId) {
@@ -36,6 +37,14 @@ class AppServices {
       database: database,
       accountEmail: client.auth.currentUser?.email ?? '',
       signOut: client.auth.signOut,
+      verifyPassword: (password) async {
+        final email = client.auth.currentUser?.email;
+        if (email == null) {
+          throw const RemoteApiException('当前没有登录账号');
+        }
+        // 重新登录一次来验证密码。密码错了 Supabase 会抛异常。
+        await client.auth.signInWithPassword(email: email, password: password);
+      },
     );
   }
 
@@ -53,6 +62,22 @@ class AppServices {
 
   /// 退出登录。界面层不直接依赖 Supabase，认证动作统一从这里走。
   final Future<void> Function()? signOut;
+
+  /// 联网校验登录密码，用于「忘记笔记口令」时确认身份。
+  /// 失败时抛异常；离线时也会失败，界面据此提示需要联网。
+  final Future<void> Function(String password)? verifyPassword;
+
+  /// 本次运行期间已解锁的笔记 id。
+  ///
+  /// 刻意只放内存、且不落盘：App 进程结束就失效，下次打开还得重新输口令。
+  /// 存到磁盘上的话，那道锁就名存实亡了。
+  final Set<String> _unlockedNotes = <String>{};
+
+  bool isUnlocked(String noteId) => _unlockedNotes.contains(noteId);
+
+  void markUnlocked(String noteId) => _unlockedNotes.add(noteId);
+
+  void markLocked(String noteId) => _unlockedNotes.remove(noteId);
 
   Future<void> dispose() async {
     sync.dispose();

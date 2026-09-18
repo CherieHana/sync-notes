@@ -1,9 +1,22 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:uuid/uuid.dart';
 
 import '../app_services.dart';
 import '../data/local/local_store.dart';
+import '../services/image_pipeline.dart';
+import '../services/note_lock.dart';
+import '../services/undo_stack.dart';
+import 'note_unlock_view.dart';
+import 'widgets/inline_note_controller.dart';
+import 'widgets/text_prompt_dialog.dart';
+
+/// 撤回用的快照：编辑态文本加当时对应的图片顺序。
+///
+/// 两张都要存——只知道文本的话，撤回一次「删掉图片」的操作就找不回那张图了。
+typedef _Snapshot = ({String display, List<String> ids});
 
 /// 编辑页。全屏纯文本，停止输入 0.8 秒自动落库，返回时再补一次。
 ///
@@ -20,15 +33,27 @@ class NoteEditPage extends StatefulWidget {
 
 class _NoteEditPageState extends State<NoteEditPage> {
   static const Duration _autosaveDelay = Duration(milliseconds: 800);
+  static const Duration _imageRetryDelay = Duration(seconds: 3);
 
-  final TextEditingController _body = TextEditingController();
   final FocusNode _focus = FocusNode();
+  final UndoStack<_Snapshot> _undo = UndoStack<_Snapshot>();
 
+  InlineNoteController? _controller;
   AppServices? _services;
   LocalNote? _note;
   Timer? _debounce;
+  Timer? _imageRetry;
+
   bool _loaded = false;
-  String _lastSaved = '';
+  bool _suppressChanges = false;
+  bool _needsUnlock = false;
+
+  String _lastDisplay = '';
+  List<String> _imageIds = const [];
+  String _lastSavedBody = '';
+
+  /// 图片 id → 本机路径。文件还没下回来时值为 null。
+  final Map<String, String?> _imagePaths = {};
 
   @override
   void didChangeDependencies() {
@@ -42,25 +67,82 @@ class _NoteEditPageState extends State<NoteEditPage> {
   @override
   void dispose() {
     _debounce?.cancel();
-    _body.dispose();
+    _imageRetry?.cancel();
+    _controller?.removeListener(_onChanged);
+    _controller?.dispose();
     _focus.dispose();
     super.dispose();
   }
 
+  // ---------------------------------------------------------------------
+  // 载入与保存
+  // ---------------------------------------------------------------------
+
   Future<void> _load() async {
     final services = _services;
     if (services == null) return;
+
     final note = await services.local.findById(widget.noteId);
     if (!mounted || note == null) return;
+
+    final locked = note.locked && !services.isUnlocked(note.id);
     setState(() {
       _note = note;
-      _lastSaved = note.body;
-      _body.text = note.body;
-      _body.selection = TextSelection.collapsed(offset: note.body.length);
+      _needsUnlock = locked;
     });
+    if (locked) return;
+
+    final display = InlineNoteController.toDisplay(note.body);
+    final controller =
+        _controller ?? (InlineNoteController(imagePathOf: _pathOf)..addListener(_onChanged));
+    _controller = controller;
+    _applySnapshot(
+      (display: display.display, ids: display.ids),
+      moveCursorToEnd: true,
+    );
+    _lastSavedBody = note.body;
+    unawaited(_resolveImagePaths(display.ids));
   }
 
-  void _onChanged(String _) {
+  /// 把一份快照写进编辑框，同时同步内部记录。
+  void _applySnapshot(_Snapshot snapshot, {bool moveCursorToEnd = false}) {
+    final controller = _controller!;
+    _suppressChanges = true;
+    controller.value = TextEditingValue(
+      text: snapshot.display,
+      selection: TextSelection.collapsed(
+        offset: moveCursorToEnd
+            ? snapshot.display.length
+            : controller.selection.baseOffset.clamp(
+                0,
+                snapshot.display.length,
+              ),
+      ),
+    );
+    _suppressChanges = false;
+    _lastDisplay = snapshot.display;
+    _imageIds = snapshot.ids;
+  }
+
+  void _onChanged() {
+    if (_suppressChanges) return;
+    final controller = _controller;
+    if (controller == null) return;
+
+    final display = controller.text;
+    if (display == _lastDisplay) return;
+
+    final snapshot = (display: _lastDisplay, ids: _imageIds);
+    final nextIds = InlineNoteController.idsAfterEdit(
+      oldDisplay: _lastDisplay,
+      newDisplay: display,
+      ids: _imageIds,
+    );
+
+    _undo.record(snapshot);
+    _lastDisplay = display;
+    _imageIds = nextIds;
+
     _debounce?.cancel();
     _debounce = Timer(_autosaveDelay, () => unawaited(_save()));
   }
@@ -68,18 +150,17 @@ class _NoteEditPageState extends State<NoteEditPage> {
   Future<void> _save() async {
     final services = _services;
     final note = _note;
-    if (services == null || note == null) return;
+    final controller = _controller;
+    if (services == null || note == null || controller == null) return;
+    if (_needsUnlock) return;
 
-    final text = _body.text;
-    if (text == _lastSaved) return;
-    _lastSaved = text;
+    final body = InlineNoteController.toDocument(controller.text, _imageIds);
+    if (body == _lastSavedBody) return;
+    _lastSavedBody = body;
 
-    await services.local.updateBody(
-      id: note.id,
-      body: text,
-      now: DateTime.now(),
-    );
-    _note = note.copyWith(body: text, updatedAt: DateTime.now());
+    final now = DateTime.now();
+    await services.local.updateBody(id: note.id, body: body, now: now);
+    _note = note.copyWith(body: body, updatedAt: now);
     unawaited(services.sync.sync());
   }
 
@@ -88,8 +169,10 @@ class _NoteEditPageState extends State<NoteEditPage> {
     await _save();
     final services = _services;
     final note = _note;
-    if (services == null || note == null) return;
-    if (_body.text.trim().isNotEmpty) return;
+    final controller = _controller;
+    if (services == null || note == null || controller == null) return;
+    if (_needsUnlock) return;
+    if (controller.text.trim().isNotEmpty) return;
 
     if (note.isNew) {
       // 从没上传过，直接删掉，服务端不会留垃圾记录。
@@ -100,43 +183,482 @@ class _NoteEditPageState extends State<NoteEditPage> {
     unawaited(services.sync.sync());
   }
 
+  // ---------------------------------------------------------------------
+  // 撤回
+  // ---------------------------------------------------------------------
+
+  void _undoStep() {
+    final previous = _undo.undo();
+    if (previous == null) return;
+    setState(() => _applySnapshot(previous));
+    unawaited(_save());
+    unawaited(_resolveImagePaths(previous.ids));
+  }
+
+  // ---------------------------------------------------------------------
+  // 图片
+  // ---------------------------------------------------------------------
+
+  String? _pathOf(String imageId) => _imagePaths[imageId];
+
+  Future<void> _resolveImagePaths(List<String> ids) async {
+    final services = _services;
+    if (services == null) return;
+
+    var changed = false;
+    for (final id in ids) {
+      if (_imagePaths.containsKey(id) && _imagePaths[id] != null) continue;
+      final exists = await services.local.imageFileExists(id);
+      final path = exists ? await services.local.imageFilePath(id) : null;
+      if (_imagePaths[id] != path) {
+        _imagePaths[id] = path;
+        changed = true;
+      }
+    }
+    if (changed && mounted) setState(() {});
+  }
+
+  /// 有图片还没下回来时，隔几秒重试一次，等同步把文件拉回来。
+  void _scheduleImageRetry() {
+    _imageRetry?.cancel();
+    if (_imagePaths.values.every((path) => path != null)) return;
+    _imageRetry = Timer(_imageRetryDelay, () {
+      if (!mounted) return;
+      unawaited(_resolveImagePaths(_imageIds).then((_) => _scheduleImageRetry()));
+    });
+  }
+
+  Future<void> _insertImage({required bool fromCamera}) async {
+    final services = _services;
+    if (services == null) return;
+
+    try {
+      final prepared = await ImagePipeline.pick(fromCamera: fromCamera);
+      if (prepared == null || !mounted) return;
+
+      final id = const Uuid().v4();
+      final now = DateTime.now();
+      await services.local.writeImageFile(id, prepared.bytes);
+      await services.local.createImage(
+        LocalImage(
+          id: id,
+          // 路径第一段放用户 id，服务端的存储策略据此判断归属。
+          storagePath: '${services.userId}/$id.jpg',
+          byteSize: prepared.bytes.length,
+          width: prepared.width,
+          height: prepared.height,
+          createdAt: now,
+          updatedAt: now,
+        ),
+      );
+      _appendImageMarker(id);
+      unawaited(services.sync.sync());
+    } on ImageTooLargeException catch (error) {
+      _toast(error.message);
+    } catch (error) {
+      _toast('插入图片失败：$error');
+    }
+  }
+
+  /// 在光标处放一个图片占位符，并且让它独占一行。
+  void _appendImageMarker(String id) {
+    final controller = _controller;
+    if (controller == null) return;
+
+    _undo.breakSegment();
+    final oldDisplay = controller.text;
+    final selection = controller.selection;
+    final start = selection.isValid ? selection.start : oldDisplay.length;
+    final end = selection.isValid ? selection.end : oldDisplay.length;
+
+    final before = oldDisplay.substring(0, start);
+    final after = oldDisplay.substring(end);
+    final padBefore = before.isEmpty || before.endsWith('\n') ? '' : '\n';
+    final padAfter = after.isEmpty || after.startsWith('\n') ? '' : '\n';
+    final inserted = '$padBefore${InlineNoteController.placeholder}$padAfter';
+
+    final ids = List<String>.from(_imageIds)
+      ..insert(InlineNoteController.countPlaceholders(before), id);
+    final snapshot = (
+      display: '$before$inserted$after',
+      ids: ids,
+    );
+
+    _undo.record((display: oldDisplay, ids: _imageIds));
+    setState(() {
+      _applySnapshot(snapshot, moveCursorToEnd: false);
+      // 光标停在图片后面，接着就能打字。
+      controller.selection = TextSelection.collapsed(
+        offset: before.length + inserted.length,
+      );
+    });
+
+    unawaited(_resolveImagePaths(ids));
+    unawaited(_save());
+    _scheduleImageRetry();
+  }
+
+  // ---------------------------------------------------------------------
+  // 加锁
+  // ---------------------------------------------------------------------
+
+  Future<void> _encryptNote() async {
+    final services = _services;
+    final note = _note;
+    if (services == null || note == null) return;
+
+    final passphrase = await _askPassphrase(
+      title: '加密这篇笔记',
+      hint: '设置一个口令，至少 ${NoteLock.minLength} 位',
+      confirmLabel: '加密',
+    );
+    if (passphrase == null || !mounted) return;
+
+    final salt = NoteLock.newSalt();
+    final hash = await NoteLock.hash(passphrase, salt);
+    if (!mounted) return;
+
+    await services.local.setNoteLock(
+      id: note.id,
+      locked: true,
+      hash: hash,
+      salt: salt,
+      now: DateTime.now(),
+    );
+    services.markUnlocked(note.id);
+    _note = note.copyWith(
+      locked: true,
+      passphraseHash: hash,
+      passphraseSalt: salt,
+    );
+    unawaited(services.sync.sync());
+    _toast('已加密。口令忘了可以用登录密码关闭加密。');
+  }
+
+  Future<void> _changePassphrase() async {
+    final services = _services;
+    final note = _note;
+    if (services == null || note == null) return;
+
+    final passphrase = await _askPassphrase(
+      title: '修改口令',
+      hint: '输入新的口令',
+      confirmLabel: '保存',
+    );
+    if (passphrase == null || !mounted) return;
+
+    final salt = NoteLock.newSalt();
+    final hash = await NoteLock.hash(passphrase, salt);
+    if (!mounted) return;
+
+    await services.local.setNoteLock(
+      id: note.id,
+      locked: true,
+      hash: hash,
+      salt: salt,
+      now: DateTime.now(),
+    );
+    _note = note.copyWith(passphraseHash: hash, passphraseSalt: salt);
+    unawaited(services.sync.sync());
+    _toast('口令已更新');
+  }
+
+  Future<void> _removeLock() async {
+    final services = _services;
+    final note = _note;
+    if (services == null || note == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('取消加密'),
+        content: const Text('取消后打开这篇笔记不再需要口令，内容本身不变。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('再想想'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('取消加密'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    await services.local.setNoteLock(
+      id: note.id,
+      locked: false,
+      hash: null,
+      salt: null,
+      now: DateTime.now(),
+    );
+    services.markLocked(note.id);
+    _note = note.copyWith(locked: false, clearPassphrase: true);
+    unawaited(services.sync.sync());
+    _toast('已取消加密');
+  }
+
+  /// 弹一个不遮蔽的口令输入框。返回 null 表示取消。
+  Future<String?> _askPassphrase({
+    required String title,
+    required String hint,
+    required String confirmLabel,
+  }) {
+    return TextPromptDialog.show(
+      context,
+      title: title,
+      confirmLabel: confirmLabel,
+      hint: hint,
+      helperText: '口令会以明文显示，方便你确认有没有打错',
+      // 故意不遮蔽：口令看得见才不会打错。
+    ).then((value) {
+      if (value == null) return null;
+      final trimmed = value.trim();
+      if (trimmed.length < NoteLock.minLength) {
+        _toast('口令至少 ${NoteLock.minLength} 位');
+        return null;
+      }
+      return trimmed;
+    });
+  }
+
+  /// 忘记口令：用登录密码证明身份，然后决定是直接解锁还是重设口令。
+  Future<void> _forgotPassphrase() async {
+    final services = _services;
+    final note = _note;
+    if (services == null || note == null) return;
+
+    final password = await _askAccountPassword(services.accountEmail);
+    if (password == null || !mounted) return;
+
+    final verify = services.verifyPassword;
+    if (verify == null) {
+      _toast('当前环境无法校验登录密码');
+      return;
+    }
+    try {
+      await verify(password);
+    } catch (error) {
+      _toast('验证没通过，检查一下密码，也可能是网络不通');
+      return;
+    }
+    if (!mounted) return;
+
+    final action = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('验证通过'),
+        content: const Text('要直接取消这篇笔记的加密，还是换一个新口令？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop('reset'),
+            child: const Text('重设口令'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop('remove'),
+            child: const Text('取消加密'),
+          ),
+        ],
+      ),
+    );
+    if (action == null || !mounted) return;
+
+    if (action == 'remove') {
+      await services.local.setNoteLock(
+        id: note.id,
+        locked: false,
+        hash: null,
+        salt: null,
+        now: DateTime.now(),
+      );
+      services.markLocked(note.id);
+      unawaited(services.sync.sync());
+      if (mounted) setState(() => _needsUnlock = false);
+      await _load();
+      return;
+    }
+
+    final passphrase = await _askPassphrase(
+      title: '设置新口令',
+      hint: '输入新的口令',
+      confirmLabel: '保存',
+    );
+    if (passphrase == null || !mounted) return;
+
+    final salt = NoteLock.newSalt();
+    final hash = await NoteLock.hash(passphrase, salt);
+    await services.local.setNoteLock(
+      id: note.id,
+      locked: true,
+      hash: hash,
+      salt: salt,
+      now: DateTime.now(),
+    );
+    services.markUnlocked(note.id);
+    unawaited(services.sync.sync().then((_) => _load()));
+  }
+
+  Future<String?> _askAccountPassword(String email) {
+    return TextPromptDialog.show(
+      context,
+      title: '验证登录密码',
+      confirmLabel: '验证',
+      hint: '登录密码',
+      // 登录密码和笔记口令不是一回事，这里保持遮蔽。
+      obscureText: true,
+      helperText: email.isEmpty
+          ? '需要联网向服务器确认'
+          : '账号：$email\n需要联网向服务器确认',
+    );
+  }
+
+  void _toast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  // ---------------------------------------------------------------------
+  // 界面
+  // ---------------------------------------------------------------------
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) unawaited(_finalize());
       },
-      child: Scaffold(
-        appBar: AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            tooltip: '返回',
-            onPressed: () => Navigator.of(context).maybePop(),
-          ),
-          title: const Text('笔记', style: TextStyle(fontSize: 15)),
-          centerTitle: true,
-        ),
-        body: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-            child: TextField(
-              controller: _body,
-              focusNode: _focus,
-              autofocus: true,
-              maxLines: null,
-              expands: true,
-              textAlignVertical: TextAlignVertical.top,
-              keyboardType: TextInputType.multiline,
-              style: const TextStyle(fontSize: 16, height: 1.6),
-              decoration: const InputDecoration(
-                border: InputBorder.none,
-                hintText: '写点什么…',
-              ),
-              onChanged: _onChanged,
+      child: Shortcuts(
+        // 覆盖 Flutter 自带的编辑器撤回：我们用自己那套，
+        // 才能把「撤回删除图片」也处理对。这个 Shortcuts 比
+        // DefaultTextEditingShortcuts 更靠近输入框，所以会先拿到按键。
+        shortcuts: const {
+          SingleActivator(LogicalKeyboardKey.keyZ, control: true):
+              _UndoNoteIntent(),
+        },
+        child: Actions(
+          actions: {
+            _UndoNoteIntent: CallbackAction<_UndoNoteIntent>(
+              onInvoke: (_) {
+                _undoStep();
+                return null;
+              },
+            ),
+          },
+          child: Focus(
+            focusNode: _focus,
+            child: Scaffold(
+              appBar: _buildAppBar(),
+              body: _buildBody(),
             ),
           ),
         ),
       ),
     );
   }
+
+  PreferredSizeWidget _buildAppBar() {
+    final note = _note;
+    return AppBar(
+      leading: IconButton(
+        icon: const Icon(Icons.arrow_back),
+        tooltip: '返回',
+        onPressed: () => Navigator.of(context).maybePop(),
+      ),
+      title: Text(
+        _needsUnlock ? '已加密' : '笔记',
+        style: const TextStyle(fontSize: 15),
+      ),
+      centerTitle: true,
+      actions: [
+        if (!_needsUnlock)
+          ListenableBuilder(
+            listenable: _undo,
+            builder: (context, _) => IconButton(
+              tooltip: '撤回',
+              icon: const Icon(Icons.undo),
+              onPressed: _undo.canUndo ? _undoStep : null,
+            ),
+          ),
+        if (!_needsUnlock && note != null)
+          PopupMenuButton<String>(
+            tooltip: '更多',
+            icon: const Icon(Icons.more_vert),
+            onSelected: (value) {
+              switch (value) {
+                case 'gallery':
+                  unawaited(_insertImage(fromCamera: false));
+                case 'camera':
+                  unawaited(_insertImage(fromCamera: true));
+                case 'encrypt':
+                  unawaited(_encryptNote());
+                case 'change':
+                  unawaited(_changePassphrase());
+                case 'unlock-off':
+                  unawaited(_removeLock());
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(value: 'gallery', child: Text('插入图片')),
+              const PopupMenuItem(value: 'camera', child: Text('拍照插入')),
+              const PopupMenuDivider(),
+              if (!note.locked)
+                const PopupMenuItem(value: 'encrypt', child: Text('加密这篇笔记'))
+              else ...[
+                const PopupMenuItem(value: 'change', child: Text('修改口令')),
+                const PopupMenuItem(value: 'unlock-off', child: Text('取消加密')),
+              ],
+            ],
+          ),
+      ],
+    );
+  }
+
+  Widget _buildBody() {
+    if (_needsUnlock) {
+      final note = _note;
+      if (note == null) return const SizedBox.shrink();
+      return NoteUnlockView(
+        note: note,
+        onUnlocked: () {
+          _services!.markUnlocked(note.id);
+          setState(() => _needsUnlock = false);
+          unawaited(_load());
+        },
+        onForgotPassphrase: () => unawaited(_forgotPassphrase()),
+      );
+    }
+
+    final controller = _controller;
+    if (controller == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+        child: TextField(
+          controller: controller,
+          autofocus: true,
+          maxLines: null,
+          expands: true,
+          textAlignVertical: TextAlignVertical.top,
+          keyboardType: TextInputType.multiline,
+          style: const TextStyle(fontSize: 16, height: 1.6),
+          decoration: const InputDecoration(
+            border: InputBorder.none,
+            hintText: '写点什么…',
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 自定义的撤回意图，避免和 Flutter 内置的撤回撞车。
+class _UndoNoteIntent extends Intent {
+  const _UndoNoteIntent();
 }

@@ -1,3 +1,15 @@
+/// 图片在正文里的表示：单独占一行 `[[img:<uuid>]]`。
+///
+/// 用自定义标记而不是 markdown 的 `![]()`，是为了让「整行就是一个图片」
+/// 这件事没有歧义——导入的 markdown 里也可能有图片语法，混在一起会认错。
+final RegExp imageTokenPattern = RegExp(r'\[\[img:([0-9a-fA-F-]{36})\]\]');
+
+/// 正文里出现过的全部图片 id，用于回收没人引用的图片。
+Iterable<String> imageIdsIn(String body) =>
+    imageTokenPattern.allMatches(body).map((m) => m.group(1)!);
+
+String imageMarker(String id) => '[[img:$id]]';
+
 /// 纯文本笔记的派生信息：标题取第一段非空内容，其余作摘要。
 String noteTitle(String body) {
   for (final line in body.split('\n')) {

@@ -64,8 +64,14 @@ ThemeData get _theme => ThemeData(
   ),
 );
 
-AppServices _services({List<LocalNote> notes = const []}) {
+AppServices _services({
+  List<LocalNote> notes = const [],
+  List<LocalFolder> folders = const [],
+}) {
   final local = FakeLocalStore()..device = 'screenshot';
+  for (final folder in folders) {
+    local.folders[folder.id] = folder;
+  }
   for (final note in notes) {
     local.notes[note.id] = note;
   }
@@ -86,6 +92,7 @@ LocalNote _note(
   String body, {
   required Duration ago,
   String? device,
+  String? folderId,
 }) {
   final at = DateTime.now().subtract(ago);
   return LocalNote(
@@ -98,6 +105,20 @@ LocalNote _note(
     serverUpdatedAt: at,
     dirty: false,
     lastDeviceId: device,
+    folderId: folderId,
+  );
+}
+
+LocalFolder _folder(String id, String name, {required Duration ago}) {
+  final at = DateTime.now().subtract(ago);
+  return LocalFolder(
+    id: id,
+    name: name,
+    version: 2,
+    baseVersion: 2,
+    createdAt: at,
+    updatedAt: at,
+    dirty: false,
   );
 }
 
@@ -120,48 +141,61 @@ void main() {
 
   testWidgets('列表页', (tester) async {
     final services = _services(
+      folders: [
+        _folder('work', '工作', ago: const Duration(days: 30)),
+        _folder('life', '生活', ago: const Duration(days: 30)),
+        _folder('read', '读书', ago: const Duration(days: 20)),
+      ],
       notes: [
         _note(
           '1',
           '周五的采购清单\n牛奶、鸡蛋、面包\n顺便带一袋咖啡豆',
           ago: const Duration(minutes: 12),
           device: 'phone',
+          folderId: 'life',
         ),
         _note(
           '2',
           '出差要带的东西\n充电器、转换头、耳机\n身份证放外套口袋',
           ago: const Duration(hours: 3),
           device: 'laptop',
+          folderId: 'work',
         ),
         _note(
           '3',
           '读书笔记：《人月神话》\n加人不能解决进度问题，只会让事情更慢',
           ago: const Duration(days: 1),
+          folderId: 'read',
         ),
         _note(
           '4',
           '给房东的维修清单\n厨房水龙头一直滴水\n卧室窗户关不严，晚上漏风',
           ago: const Duration(days: 4),
+          folderId: 'life',
         ),
         _note(
           '5',
           '面试要问的问题\n团队现在最头疼的事是什么\n上线流程走几步',
           ago: const Duration(days: 11),
+          folderId: 'work',
         ),
         _note(
           '6',
           '路由器后台密码\n在抽屉里的便签上',
           ago: const Duration(days: 18),
+          folderId: 'work',
         ),
         _note(
           '7',
           '想看的电影\n一一、海边的曼彻斯特、燃烧',
           ago: const Duration(days: 26),
+          folderId: 'read',
         ),
         _note(
           '8',
           '搬家清单\n宽带要提前一周预约移机',
           ago: const Duration(days: 40),
+          folderId: 'life',
         ),
       ],
     );
