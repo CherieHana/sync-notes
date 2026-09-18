@@ -10,6 +10,7 @@ import '../data/sync/sync_controller.dart';
 import '../services/file_import.dart';
 import '../util/note_text.dart';
 import 'note_edit_page.dart';
+import 'widgets/folder_picker.dart';
 import 'widgets/text_prompt_dialog.dart';
 
 /// 顶部目录标签里代表「全部」和「未分类」的两个固定项。
@@ -118,40 +119,51 @@ class _NotesListPageState extends State<NotesListPage> {
 
   Future<void> _moveNote(LocalNote note, List<LocalFolder> folders) async {
     final services = _services;
-    final chosen = await showModalBottomSheet<String?>(
-      context: context,
-      builder: (context) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            const ListTile(
-              title: Text('移动到…', style: TextStyle(fontWeight: FontWeight.w600)),
-            ),
-            ListTile(
-              leading: const Icon(Icons.inbox_outlined),
-              title: const Text('未分类'),
-              selected: note.folderId == null,
-              onTap: () => Navigator.of(context).pop(_uncategorizedTab),
-            ),
-            for (final folder in folders)
-              ListTile(
-                leading: const Icon(Icons.folder_outlined),
-                title: Text(folder.name),
-                selected: note.folderId == folder.id,
-                onTap: () => Navigator.of(context).pop(folder.id),
-              ),
-          ],
-        ),
-      ),
+    final chosen = await showFolderPicker(
+      context,
+      folders: folders,
+      currentFolderId: note.folderId,
     );
     if (chosen == null || !mounted) return;
 
     await services.local.setNoteFolder(
       id: note.id,
-      folderId: chosen == _uncategorizedTab ? null : chosen,
+      folderId: chosen == pickUncategorized ? null : chosen,
       now: DateTime.now(),
     );
     unawaited(services.sync.sync());
+  }
+
+  /// 桌面端的右键菜单。
+  ///
+  /// 「把笔记换个目录」这件事本来只有长按才触发，触屏上没问题，
+  /// 但用鼠标长按（按住不放）不是个自然的动作，等于藏起来了。
+  /// 这里补一个右键入口，和长按走同一套逻辑。
+  Future<void> _showNoteMenu(
+    LocalNote note,
+    List<LocalFolder> folders,
+    Offset position,
+  ) async {
+    final overlay =
+        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        position & const Size(1, 1),
+        Offset.zero & overlay.size,
+      ),
+      items: const [
+        PopupMenuItem<String>(value: 'move', child: Text('移动到…')),
+        PopupMenuItem<String>(value: 'delete', child: Text('删除')),
+      ],
+    );
+    if (!mounted || action == null) return;
+
+    if (action == 'move') {
+      await _moveNote(note, folders);
+    } else if (action == 'delete') {
+      await _delete(note);
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -520,7 +532,11 @@ class _NotesListPageState extends State<NotesListPage> {
             child: const Icon(Icons.delete_outline),
           ),
           onDismissed: (_) => _delete(note),
-          child: ListTile(
+          child: GestureDetector(
+            // 鼠标右键；触屏上仍然用长按。
+            onSecondaryTapDown: (details) =>
+                unawaited(_showNoteMenu(note, folders, details.globalPosition)),
+            child: ListTile(
             contentPadding: const EdgeInsets.symmetric(
               horizontal: 16,
               vertical: 4,
@@ -563,6 +579,7 @@ class _NotesListPageState extends State<NotesListPage> {
             ),
             onTap: () => _open(note),
             onLongPress: () => unawaited(_moveNote(note, folders)),
+            ),
           ),
         );
       },

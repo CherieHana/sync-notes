@@ -8,9 +8,11 @@
 //
 // 这个测试走的是和正式运行完全一样的 widget 树（AuthenticatedApp），
 // 所以能把结构问题挡在提交之前。
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sync_notes/app_services.dart';
+import 'package:sync_notes/data/local/local_store.dart';
 import 'package:sync_notes/data/sync/sync_controller.dart';
 import 'package:sync_notes/data/sync/sync_engine.dart';
 import 'package:sync_notes/main.dart';
@@ -134,6 +136,69 @@ void main() {
     expect(find.text('工作'), findsWidgets);
     final folders = await services.local.watchVisibleFolders().first;
     expect(folders.map((f) => f.name), contains('工作'));
+  });
+
+  testWidgets('右键笔记可以把它换到别的目录', (tester) async {
+    final services = buildTestServices('ui-test-user');
+    final at = DateTime.now();
+
+    LocalFolder folder(String id, String name) => LocalFolder(
+      id: id,
+      name: name,
+      version: 1,
+      baseVersion: 1,
+      createdAt: at,
+      updatedAt: at,
+      dirty: false,
+    );
+
+    await services.local.createFolder(folder('f1', '近期新闻'));
+    await services.local.createFolder(folder('f2', '过期新闻'));
+    await services.local.createNote(
+      localNote(
+        id: 'n1',
+        body: '一条新闻',
+        version: 1,
+        baseVersion: 1,
+        folderId: 'f1',
+        dirty: false,
+      ),
+    );
+    await pumpWithServices(tester, services);
+
+    // 鼠标右键。触屏上的长按不算自然操作，桌面端得有右键入口。
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('一条新闻')),
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(find.text('移动到…'), findsOneWidget);
+    await tester.tap(find.text('移动到…'));
+    await tester.pumpAndSettle();
+
+    // 选「过期新闻」。顶部标签里也有同名文字，这里点的是弹层里的那一项。
+    await tester.tap(find.widgetWithText(ListTile, '过期新闻'));
+    await tester.pumpAndSettle();
+
+    expect((await services.local.findById('n1'))!.folderId, 'f2');
+  });
+
+  testWidgets('编辑页的菜单里也能改目录', (tester) async {
+    final services = buildTestServices('ui-test-user');
+    await services.local.createNote(
+      localNote(id: 'n1', body: '正文', version: 1, baseVersion: 1, dirty: false),
+    );
+    await pumpWithServices(tester, services);
+
+    await tester.tap(find.text('正文'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+
+    expect(find.text('移动到…'), findsOneWidget);
   });
 
   testWidgets('左滑删除后能点撤销把笔记找回来', (tester) async {

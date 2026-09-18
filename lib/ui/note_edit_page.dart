@@ -15,6 +15,7 @@ import '../services/file_import.dart';
 import '../services/note_lock.dart';
 import '../services/undo_stack.dart';
 import 'note_unlock_view.dart';
+import 'widgets/folder_picker.dart';
 import 'widgets/inline_note_controller.dart';
 import 'widgets/text_prompt_dialog.dart';
 
@@ -454,6 +455,36 @@ class _NoteEditPageState extends State<NoteEditPage> {
   // 加锁
   // ---------------------------------------------------------------------
 
+  /// 换个目录。放一份在编辑页里，是因为「写到一半想起来该归到别的目录」
+  /// 是很常见的事，不用退出去再找。
+  Future<void> _moveToFolder() async {
+    final services = _services;
+    final note = _note;
+    if (services == null || note == null) return;
+
+    final folders = await services.local.watchVisibleFolders().first;
+    if (!mounted) return;
+
+    final chosen = await showFolderPicker(
+      context,
+      folders: folders,
+      currentFolderId: note.folderId,
+    );
+    if (chosen == null || !mounted) return;
+
+    final folderId = chosen == pickUncategorized ? null : chosen;
+    await services.local.setNoteFolder(
+      id: note.id,
+      folderId: folderId,
+      now: DateTime.now(),
+    );
+    _note = note.copyWith(
+      folderId: folderId,
+      clearFolderId: folderId == null,
+    );
+    unawaited(services.sync.sync());
+  }
+
   Future<void> _encryptNote() async {
     final services = _services;
     final note = _note;
@@ -747,6 +778,8 @@ class _NoteEditPageState extends State<NoteEditPage> {
                   unawaited(_insertImage(fromCamera: true));
                 case 'paste':
                   unawaited(_pasteImageFromClipboard());
+                case 'move':
+                  unawaited(_moveToFolder());
                 case 'encrypt':
                   unawaited(_encryptNote());
                 case 'change':
@@ -760,6 +793,8 @@ class _NoteEditPageState extends State<NoteEditPage> {
               const PopupMenuItem(value: 'camera', child: Text('拍照插入')),
               if (ClipboardImage.isSupported)
                 const PopupMenuItem(value: 'paste', child: Text('粘贴图片')),
+              const PopupMenuDivider(),
+              const PopupMenuItem(value: 'move', child: Text('移动到…')),
               const PopupMenuDivider(),
               if (!note.locked)
                 const PopupMenuItem(value: 'encrypt', child: Text('加密这篇笔记'))
