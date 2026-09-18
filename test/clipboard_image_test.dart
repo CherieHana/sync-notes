@@ -1,6 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 import 'package:sync_notes/services/clipboard_image.dart';
 
 void main() {
@@ -57,6 +60,45 @@ void main() {
     messenger.setMockMethodCallHandler(
       channel,
       (call) async => {'format': 'bmp', 'bytes': Uint8List.fromList([1])},
+    );
+    expect(await ClipboardImage.read(), isNull);
+  });
+
+  test('复制的是图片文件时，顺着路径把文件读出来', () async {
+    final directory = Directory.systemTemp.createTempSync('sync-notes-clip');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final file = File(p.join(directory.path, '截图.png'))
+      ..writeAsBytesSync([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]);
+
+    // 这条路上原生侧只给路径、没有 bytes 字段。
+    // 早先 Dart 侧在判断 format 之前就先要求 bytes 存在，
+    // 结果「在资源管理器里复制图片文件」一直提示剪切板里没有图片。
+    messenger.setMockMethodCallHandler(
+      channel,
+      (call) async => {'format': 'path', 'path': file.path},
+    );
+
+    expect(await ClipboardImage.read(), [137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]);
+  });
+
+  test('复制的是非图片文件时返回 null', () async {
+    final directory = Directory.systemTemp.createTempSync('sync-notes-clip');
+    addTearDown(() => directory.deleteSync(recursive: true));
+    final file = File(p.join(directory.path, '文档.txt'))
+      ..writeAsStringSync('只是文本');
+
+    messenger.setMockMethodCallHandler(
+      channel,
+      (call) async => {'format': 'path', 'path': file.path},
+    );
+
+    expect(await ClipboardImage.read(), isNull);
+  });
+
+  test('路径指向的文件不存在时返回 null', () async {
+    messenger.setMockMethodCallHandler(
+      channel,
+      (call) async => {'format': 'path', 'path': r'C:\不存在的目录\a.png'},
     );
     expect(await ClipboardImage.read(), isNull);
   });

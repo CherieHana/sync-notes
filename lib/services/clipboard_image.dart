@@ -32,17 +32,19 @@ class ClipboardImage {
         .invokeMethod<Map<Object?, Object?>>('readImage');
     if (result == null) return null;
 
-    final raw = result['bytes'];
-    if (raw is! Uint8List) return null;
-
+    // 注意：不能在这里先统一要求 bytes 存在。
+    // 「复制的是文件」那条路给的是路径、没有 bytes 字段，
+    // 提前判空会让文件路径这条路直接返回 null。
     switch (result['format']) {
       case 'file':
         // 剪切板里直接放的就是图片文件字节，不用再处理。
-        return raw;
+        final raw = result['bytes'];
+        return raw is Uint8List ? raw : null;
       case 'rgba':
+        final raw = result['bytes'];
         final width = result['width'];
         final height = result['height'];
-        if (width is! int || height is! int) return null;
+        if (raw is! Uint8List || width is! int || height is! int) return null;
         // 平台那边给的是原始像素，编码成 PNG 才能进后续的压缩流程。
         // 一张截图有上百万像素，放后台 isolate 里做，别卡住界面。
         return compute(_encodeRgba, (raw, width, height));
