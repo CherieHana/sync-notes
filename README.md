@@ -190,3 +190,7 @@ flutter test test/live_backend_test.dart \
 Supabase 免费项目连续 7 天没有任何访问会被自动暂停，到面板点一下就能恢复。
 
 手机端只在 App 打开或切回前台时同步，没有做后台常驻推送和通知。
+
+## 许可
+
+MIT，全文见 [LICENSE](LICENSE)。
