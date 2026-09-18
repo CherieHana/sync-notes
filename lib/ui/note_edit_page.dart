@@ -7,6 +7,7 @@ import 'package:uuid/uuid.dart';
 import '../app_services.dart';
 import '../data/local/local_store.dart';
 import '../services/image_pipeline.dart';
+import '../services/clipboard_image.dart';
 import '../services/note_lock.dart';
 import '../services/undo_stack.dart';
 import 'note_unlock_view.dart';
@@ -52,8 +53,8 @@ class _NoteEditPageState extends State<NoteEditPage> {
   List<String> _imageIds = const [];
   String _lastSavedBody = '';
 
-  /// 图片 id → 本机路径。文件还没下回来时值为 null。
-  final Map<String, String?> _imagePaths = {};
+  /// 图片 id → 渲染信息（本机路径与宽高比）。
+  final Map<String, InlineImageInfo> _imageInfo = {};
 
   @override
   void didChangeDependencies() {
@@ -94,14 +95,18 @@ class _NoteEditPageState extends State<NoteEditPage> {
 
     final display = InlineNoteController.toDisplay(note.body);
     final controller =
-        _controller ?? (InlineNoteController(imagePathOf: _pathOf)..addListener(_onChanged));
+        _controller ??
+        (InlineNoteController(
+          idsOf: () => _imageIds,
+          imageInfoOf: _imageInfoOf,
+        )..addListener(_onChanged));
     _controller = controller;
     _applySnapshot(
       (display: display.display, ids: display.ids),
       moveCursorToEnd: true,
     );
     _lastSavedBody = note.body;
-    unawaited(_resolveImagePaths(display.ids));
+    unawaited(_resolveImageInfo(display.ids));
   }
 
   /// 把一份快照写进编辑框，同时同步内部记录。
@@ -192,26 +197,39 @@ class _NoteEditPageState extends State<NoteEditPage> {
     if (previous == null) return;
     setState(() => _applySnapshot(previous));
     unawaited(_save());
-    unawaited(_resolveImagePaths(previous.ids));
+    unawaited(_resolveImageInfo(previous.ids));
   }
 
   // ---------------------------------------------------------------------
   // 图片
   // ---------------------------------------------------------------------
 
-  String? _pathOf(String imageId) => _imagePaths[imageId];
+  InlineImageInfo _imageInfoOf(String imageId) =>
+      _imageInfo[imageId] ?? const InlineImageInfo();
 
-  Future<void> _resolveImagePaths(List<String> ids) async {
+  Future<void> _resolveImageInfo(List<String> ids) async {
     final services = _services;
     if (services == null) return;
 
     var changed = false;
     for (final id in ids) {
-      if (_imagePaths.containsKey(id) && _imagePaths[id] != null) continue;
+      if (_imageInfo[id]?.path != null) continue;
+
       final exists = await services.local.imageFileExists(id);
       final path = exists ? await services.local.imageFilePath(id) : null;
-      if (_imagePaths[id] != path) {
-        _imagePaths[id] = path;
+      final row = await services.local.findImageById(id);
+      final width = row?.width;
+      final height = row?.height;
+      final info = InlineImageInfo(
+        path: path,
+        // 按原始比例排版。固定宽度会把窄图压扁、让宽图撑破一行。
+        aspectRatio: (width != null && height != null && height > 0)
+            ? width / height
+            : 4 / 3,
+      );
+      if (_imageInfo[id]?.path != info.path ||
+          _imageInfo[id]?.aspectRatio != info.aspectRatio) {
+        _imageInfo[id] = info;
         changed = true;
       }
     }
@@ -221,43 +239,68 @@ class _NoteEditPageState extends State<NoteEditPage> {
   /// 有图片还没下回来时，隔几秒重试一次，等同步把文件拉回来。
   void _scheduleImageRetry() {
     _imageRetry?.cancel();
-    if (_imagePaths.values.every((path) => path != null)) return;
+    if (_imageInfo.values.every((info) => info.path != null)) return;
     _imageRetry = Timer(_imageRetryDelay, () {
       if (!mounted) return;
-      unawaited(_resolveImagePaths(_imageIds).then((_) => _scheduleImageRetry()));
+      unawaited(_resolveImageInfo(_imageIds).then((_) => _scheduleImageRetry()));
     });
   }
 
   Future<void> _insertImage({required bool fromCamera}) async {
-    final services = _services;
-    if (services == null) return;
+    if (_services == null) return;
 
     try {
       final prepared = await ImagePipeline.pick(fromCamera: fromCamera);
       if (prepared == null || !mounted) return;
-
-      final id = const Uuid().v4();
-      final now = DateTime.now();
-      await services.local.writeImageFile(id, prepared.bytes);
-      await services.local.createImage(
-        LocalImage(
-          id: id,
-          // 路径第一段放用户 id，服务端的存储策略据此判断归属。
-          storagePath: '${services.userId}/$id.jpg',
-          byteSize: prepared.bytes.length,
-          width: prepared.width,
-          height: prepared.height,
-          createdAt: now,
-          updatedAt: now,
-        ),
-      );
-      _appendImageMarker(id);
-      unawaited(services.sync.sync());
+      await _storeImage(prepared);
     } on ImageTooLargeException catch (error) {
       _toast(error.message);
     } catch (error) {
       _toast('插入图片失败：$error');
     }
+  }
+
+  /// 把系统剪切板里的图片粘进来。目前只有桌面端能用。
+  Future<void> _pasteImageFromClipboard() async {
+    if (_services == null) return;
+
+    try {
+      final raw = await ClipboardImage.read();
+      if (!mounted) return;
+      if (raw == null) {
+        _toast('剪切板里没有图片');
+        return;
+      }
+      final prepared = await ImagePipeline.prepare(raw);
+      if (!mounted) return;
+      await _storeImage(prepared);
+    } on ImageTooLargeException catch (error) {
+      _toast(error.message);
+    } catch (error) {
+      _toast('粘贴图片失败：$error');
+    }
+  }
+
+  /// 把处理好的图片存到本地，并在光标处插进正文。
+  Future<void> _storeImage(PreparedImage prepared) async {
+    final services = _services!;
+    final id = const Uuid().v4();
+    final now = DateTime.now();
+    await services.local.writeImageFile(id, prepared.bytes);
+    await services.local.createImage(
+      LocalImage(
+        id: id,
+        // 路径第一段放用户 id，服务端的存储策略据此判断归属。
+        storagePath: '${services.userId}/$id.jpg',
+        byteSize: prepared.bytes.length,
+        width: prepared.width,
+        height: prepared.height,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    _appendImageMarker(id);
+    unawaited(services.sync.sync());
   }
 
   /// 在光标处放一个图片占位符，并且让它独占一行。
@@ -293,7 +336,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
       );
     });
 
-    unawaited(_resolveImagePaths(ids));
+    unawaited(_resolveImageInfo(ids));
     unawaited(_save());
     _scheduleImageRetry();
   }
@@ -593,6 +636,8 @@ class _NoteEditPageState extends State<NoteEditPage> {
                   unawaited(_insertImage(fromCamera: false));
                 case 'camera':
                   unawaited(_insertImage(fromCamera: true));
+                case 'paste':
+                  unawaited(_pasteImageFromClipboard());
                 case 'encrypt':
                   unawaited(_encryptNote());
                 case 'change':
@@ -604,6 +649,8 @@ class _NoteEditPageState extends State<NoteEditPage> {
             itemBuilder: (context) => [
               const PopupMenuItem(value: 'gallery', child: Text('插入图片')),
               const PopupMenuItem(value: 'camera', child: Text('拍照插入')),
+              if (ClipboardImage.isSupported)
+                const PopupMenuItem(value: 'paste', child: Text('粘贴图片')),
               const PopupMenuDivider(),
               if (!note.locked)
                 const PopupMenuItem(value: 'encrypt', child: Text('加密这篇笔记'))
@@ -652,8 +699,33 @@ class _NoteEditPageState extends State<NoteEditPage> {
             border: InputBorder.none,
             hintText: '写点什么…',
           ),
+          contextMenuBuilder: _buildContextMenu,
         ),
       ),
+    );
+  }
+
+  /// 右键（长按）菜单。桌面端额外挂一个「粘贴图片」：
+  /// Flutter 自带的粘贴只处理文本，从截图工具或浏览器复制的图片粘不进来。
+  Widget _buildContextMenu(
+    BuildContext context,
+    EditableTextState editableTextState,
+  ) {
+    final items = [...editableTextState.contextMenuButtonItems];
+    if (ClipboardImage.isSupported) {
+      items.add(
+        ContextMenuButtonItem(
+          label: '粘贴图片',
+          onPressed: () {
+            editableTextState.hideToolbar();
+            unawaited(_pasteImageFromClipboard());
+          },
+        ),
+      );
+    }
+    return AdaptiveTextSelectionToolbar.buttonItems(
+      anchors: editableTextState.contextMenuAnchors,
+      buttonItems: items,
     );
   }
 }

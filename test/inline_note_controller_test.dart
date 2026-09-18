@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sync_notes/ui/widgets/inline_note_controller.dart';
 
@@ -86,5 +87,76 @@ void main() {
   test('没有记录撑着的占位符会在转回文档时被丢掉', () {
     const display = '正文${InlineNoteController.placeholder}';
     expect(InlineNoteController.toDocument(display, const []), '正文');
+  });
+
+  group('渲染', () {
+    late BuildContext context;
+
+    Future<void> pumpContext(WidgetTester tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (value) {
+              context = value;
+              return const SizedBox();
+            },
+          ),
+        ),
+      );
+    }
+
+    testWidgets('占位符会换成图片组件，而不是把原始字符画出来', (tester) async {
+      await pumpContext(tester);
+      final controller = InlineNoteController(
+        idsOf: () => [idA],
+        imageInfoOf: (_) => const InlineImageInfo(),
+      );
+      controller.text = '前${InlineNoteController.placeholder}后';
+
+      final span = controller.buildTextSpan(
+        context: context,
+        withComposing: false,
+      );
+      final widgets = span.children!.whereType<WidgetSpan>().toList();
+
+      // 这里曾经出过问题：控制器从编辑态文本里找 id，而编辑态里只有占位符，
+      // 结果一个图片组件都没生成，界面上显示成一排「OBJ」方块。
+      expect(widgets, hasLength(1));
+    });
+
+    testWidgets('渲染出来的文本长度和编辑内容完全一致', (tester) async {
+      await pumpContext(tester);
+      final controller = InlineNoteController(
+        idsOf: () => [idA, idB],
+        imageInfoOf: (_) => const InlineImageInfo(),
+      );
+      controller.text =
+          '前${InlineNoteController.placeholder}中${InlineNoteController.placeholder}后';
+
+      final span = controller.buildTextSpan(
+        context: context,
+        withComposing: false,
+      );
+
+      // WidgetSpan 只顶一个字符，长度对不上光标就会错位。
+      expect(span.toPlainText().length, controller.text.length);
+    });
+
+    testWidgets('没有对应记录的占位符也占住一个字符', (tester) async {
+      await pumpContext(tester);
+      final controller = InlineNoteController(
+        idsOf: () => const [],
+        imageInfoOf: (_) => const InlineImageInfo(),
+      );
+      controller.text = '异常${InlineNoteController.placeholder}情况';
+
+      final span = controller.buildTextSpan(
+        context: context,
+        withComposing: false,
+      );
+
+      expect(span.children!.whereType<WidgetSpan>(), hasLength(1));
+      expect(span.toPlainText().length, controller.text.length);
+    });
   });
 }
