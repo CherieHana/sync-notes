@@ -16,7 +16,10 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+1
+# 版本号约定：加号前是给人看的版本，加号后是给系统看的构建号。
+# 每次发版两个都往后加一，例如 1.0.1+2 → 1.0.2+3。
+# Android 就是靠加号后面这个数字判断「这是不是新版本」，只改前面它不认。
+version: 1.0.1+2
 
 environment:
   sdk: ^3.13.3
