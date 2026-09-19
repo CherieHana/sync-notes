@@ -125,6 +125,9 @@ class _NoteEditPageState extends State<NoteEditPage> {
   DateTime? _lastTapAt;
   Offset? _lastTapPosition;
 
+  /// 最近一次主动叫出输入法的时刻，用来防止刚叫出来又被自己摁回去。
+  DateTime? _keyboardShownAt;
+
   /// 已排队的「把光标滚出来」，一帧只做一次。
   bool _revealScheduled = false;
 
@@ -276,6 +279,9 @@ class _NoteEditPageState extends State<NoteEditPage> {
   // ---------------------------------------------------------------------
 
   void _onControllerChanged() {
+    // 选字的过程中别让输入法冒出来（拖选、拖抓手、长按选词都会走到这里）。
+    if (_lazyKeyboard) _keepKeyboardHiddenWhileSelecting();
+
     // 拖选过程中不抢：那会儿滚动由边缘自动滚动负责。
     if (_pointerDown) {
       _selectionMovedWhileDown = true;
@@ -285,6 +291,24 @@ class _NoteEditPageState extends State<NoteEditPage> {
       return;
     }
     _scheduleReveal();
+  }
+
+  /// 手机上只要正在选字（选区不是一根光标），就把输入法摁回去。
+  ///
+  /// Quill 每次选区变化都可能会去要一次输入法，拖选和拖抓手的时候尤其明显，
+  /// 键盘会一次次往上顶。这里在每次选区变化后收一次；本来没弹就什么都不做，
+  /// 不会反复调通道。刚主动叫出键盘的那半秒内不动手，免得跟双击打架。
+  void _keepKeyboardHiddenWhileSelecting() {
+    final shown = _keyboardShownAt;
+    if (shown != null &&
+        DateTime.now().difference(shown) < const Duration(milliseconds: 600)) {
+      return;
+    }
+
+    final selection = _controller?.selection;
+    if (selection == null || selection.isCollapsed) return;
+    if (_keyboardInset <= 0) return;
+    _setSoftKeyboardVisible(false);
   }
 
   void _scheduleReveal() {
@@ -435,6 +459,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
   /// 外面拿不到。这两个方法名是 TextInput 通道协议的一部分，引擎自己就按它处理，
   /// 所以这里直接用——不这么做就没法做到「光标留着、键盘收回去」。
   void _setSoftKeyboardVisible(bool visible) {
+    if (visible) _keyboardShownAt = DateTime.now();
     SystemChannels.textInput.invokeMethod<void>(
       visible ? 'TextInput.show' : 'TextInput.hide',
     );
@@ -443,8 +468,9 @@ class _NoteEditPageState extends State<NoteEditPage> {
   /// 「选择」：把选区重新点亮一次。
   ///
   /// 两端那两个拖动抓手要「编辑器有焦点 + 选区叠加层在」才会画出来。长按偶尔会
-  /// 出现菜单出来了、抓手没跟上的情况，点这个按钮就把焦点和叠加层都补一遍，
-  /// 抓手随即出现；本来只有光标时，顺手把光标所在的词选上。
+  /// 出现菜单出来了、抓手没跟上的情况，点这个按钮就把两样都补回来：先把焦点要回
+  /// 编辑器，下一帧再让编辑器把工具栏和抓手一起摆一次（它的 showToolbar 会顺手
+  /// 把抓手补上）。本来只有光标时，顺手把光标所在的词选上。
   void _reselectForHandles() {
     final editor = _editorKey.currentState;
     final controller = _controller;
@@ -459,8 +485,28 @@ class _NoteEditPageState extends State<NoteEditPage> {
 
     _focus.requestFocus();
     controller.updateSelection(selection, ChangeSource.local);
-    editor.showToolbar();
-    _scheduleReveal();
+
+    // 焦点是异步生效的，抓手要等编辑器真的有焦点才建得出来，所以等下一帧。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _editorKey.currentState?.showToolbar();
+      _setSoftKeyboardVisible(false);
+      _scheduleReveal();
+    });
+  }
+
+  /// 点完菜单里的按钮之后，把编辑器的状态收回来。
+  ///
+  /// 这条浮动菜单不在编辑器的点击区域内，点它会被当成「点到外面」：编辑器丢掉
+  /// 焦点，两端的抓手跟着消失，键盘还会被重新叫出来。这里统一补一遍——焦点还
+  /// 回去，本来没在打字就保持键盘不弹（剪切/复制/粘贴/全选都一样）。
+  void _afterMenuAction() {
+    final wasTyping = _keyboardInset > 0;
+    _focus.requestFocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (!wasTyping) _setSoftKeyboardVisible(false);
+    });
   }
 
   /// 手机上按下的这一下先别让编辑器去要输入法，等抬起时看是不是双击。
@@ -1414,7 +1460,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
     BuildContext context,
     QuillRawEditorState editorState,
   ) {
-    final items = [...editorState.contextMenuButtonItems];
+    var items = [...editorState.contextMenuButtonItems];
     if (ClipboardImage.isSupported) {
       items.add(
         ContextMenuButtonItem(
@@ -1428,6 +1474,18 @@ class _NoteEditPageState extends State<NoteEditPage> {
     }
 
     if (_lazyKeyboard) {
+      // 菜单里的每一项点完都把编辑器状态收回来（详见 [_afterMenuAction]）。
+      items = [
+        for (final item in items)
+          ContextMenuButtonItem(
+            type: item.type,
+            label: item.label,
+            onPressed: () {
+              item.onPressed?.call();
+              _afterMenuAction();
+            },
+          ),
+      ];
       // 手机上补一个「选择」：长按偶尔只弹出菜单、不给两端的拖动抓手，
       // 点它一下就把抓手叫回来。放在最前面，最好按。
       items.insert(

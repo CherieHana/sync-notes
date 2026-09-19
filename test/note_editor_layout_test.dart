@@ -46,6 +46,7 @@ void main() {
     String body, {
     bool withImageFile = true,
     TargetPlatform? platform,
+    double keyboardInset = 0,
   }) async {
     final local = FakeLocalStore()..device = 'layout-test';
     final at = DateTime.now();
@@ -72,6 +73,12 @@ void main() {
 
     final remote = FakeRemoteApi();
     final engine = SyncEngine(local: local, remote: remote);
+    if (keyboardInset > 0) {
+      // 假装输入法已经开着：系统就是通过 viewInsets 把键盘高度报上来的。
+      tester.view.viewInsets = FakeViewPadding(bottom: keyboardInset);
+      addTearDown(tester.view.reset);
+    }
+
     await tester.pumpWidget(
       AppScope(
         services: AppServices(
@@ -638,6 +645,87 @@ void main() {
     expect(find.byType(AdaptiveTextSelectionToolbar), findsOneWidget);
     expect(controller.selection.start, 0);
     expect(controller.selection.end, greaterThanOrEqualTo(4));
+  });
+
+  testWidgets('拖选的时候输入法被摁住，不会一次次往上顶', (tester) async {
+    final calls = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.textInput,
+      (call) async {
+        calls.add(call.method);
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.textInput,
+        null,
+      ),
+    );
+
+    await pumpEditor(
+      tester,
+      '第一行文字，拿来拖选\n第二行文字',
+      platform: TargetPlatform.android,
+      keyboardInset: 300,
+    );
+    calls.clear();
+
+    // 鼠标从左往右拖过第一行，选中一段字。
+    final line = tester.getRect(find.text('第一行文字，拿来拖选', findRichText: true));
+    final gesture = await tester.startGesture(
+      line.centerLeft + const Offset(4, 0),
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump();
+    for (var i = 0; i < 3; i++) {
+      await gesture.moveBy(const Offset(40, 0));
+      await tester.pump(const Duration(milliseconds: 60));
+    }
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(calls, contains('TextInput.hide'), reason: '拖选过程中输入法没被摁住');
+  });
+
+  testWidgets('点完菜单里的按钮，焦点收回来、键盘也不会又弹出来', (tester) async {
+    final calls = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.textInput,
+      (call) async {
+        calls.add(call.method);
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.textInput,
+        null,
+      ),
+    );
+
+    await pumpEditor(tester, '第一行文字\n第二行文字', platform: TargetPlatform.android);
+    final editor = tester.widget<QuillEditor>(find.byType(QuillEditor));
+    final controller = editor.controller;
+    controller.updateSelection(
+      const TextSelection(baseOffset: 0, extentOffset: 4),
+      ChangeSource.local,
+    );
+    tester
+        .state<QuillRawEditorState>(find.byType(QuillRawEditor))
+        .showToolbar();
+    await tester.pumpAndSettle();
+    expect(find.text('Copy'), findsOneWidget);
+    calls.clear();
+
+    // 点菜单里的「复制」。
+    await tester.tap(find.text('Copy'));
+    for (var i = 0; i < 4; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+
+    expect(editor.focusNode.hasFocus, isTrue, reason: '点完菜单没把焦点收回来');
+    expect(calls, contains('TextInput.hide'), reason: '点完菜单键盘又冒出来了');
   });
 
   testWidgets('打开老笔记会顺手把正文升级成富文本存回去', (tester) async {
