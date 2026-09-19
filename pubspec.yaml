@@ -23,7 +23,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 #
 # 构建号一定要加：Android 就是靠它判断「这是不是新版本」，
 # 数字不变的话新包装不上去。改动内容记在 README 的更新日志里。
-version: 1.4.0+15
+version: 1.4.1+16
 
 environment:
   sdk: ^3.13.3
