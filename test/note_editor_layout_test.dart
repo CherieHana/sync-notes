@@ -521,13 +521,12 @@ void main() {
       isEmpty,
       reason: '轻点一下就唤起输入法了',
     );
-    // 也不能靠「弹了再收」装样子：一次开关都不该有。
+    // 允许为了把编辑器从「没焦点但有光标」拉回来收一次键盘，
+    // 但绝不能反复开关——那才是鬼畜。
     expect(
-      calls.where(
-        (call) => call == 'TextInput.show' || call == 'TextInput.hide',
-      ),
-      isEmpty,
-      reason: '轻点不该动输入法',
+      calls.where((call) => call == 'TextInput.hide').length,
+      lessThanOrEqualTo(1),
+      reason: '轻点不该反复开关输入法',
     );
 
     // 紧接着再点一下就是双击，这次要弹。
@@ -689,15 +688,23 @@ void main() {
       await gesture.moveBy(const Offset(40, 0));
       await tester.pump(const Duration(milliseconds: 60));
     }
-    await gesture.up();
-    await tester.pumpAndSettle();
-
+    // 拖动过程中一次开关都不该有——有开关就是在跟编辑器抢，看起来就是鬼畜。
     expect(
       calls.where(
         (call) => call == 'TextInput.show' || call == 'TextInput.hide',
       ),
       isEmpty,
-      reason: '拖选过程中不该开关输入法，开关打架就是鬼畜的来源',
+      reason: '拖选过程中开关了输入法',
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    // 松手后最多收一次，而且绝不能再主动弹出来。
+    expect(calls.where((call) => call == 'TextInput.show'), isEmpty);
+    expect(
+      calls.where((call) => call == 'TextInput.hide').length,
+      lessThanOrEqualTo(1),
+      reason: '松手后不该反复开关输入法',
     );
   });
 

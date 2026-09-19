@@ -410,10 +410,15 @@ class _NoteEditPageState extends State<NoteEditPage> {
       _showSoftKeyboard();
       return;
     }
-    // 拖选也是一次正经的选字操作：焦点要给编辑器（光标和抓手都靠它显示），
-    // 但不去叫键盘——编辑器想弹的那个请求已经被 [_suppressKeyboardWhileSelecting]
-    // 吞掉了，这里再动手关一次反而会变成「弹出来又收回去」。
-    if (wasTap || selectedSomething) _focus.requestFocus();
+    // 拖选也是一次正经的选字操作：焦点要给编辑器（光标和抓手都靠它显示）。
+    // 但编辑器一拿到焦点就会去开输入法连接、顺手把键盘也唤出来，所以这里在
+    // 焦点生效之后关一次——一次手势只关这一次，不会来回开关。
+    if (wasTap || selectedSomething) {
+      _focus.requestFocus();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _hideSoftKeyboard();
+      });
+    }
   }
 
   /// 两次轻点挨得很近就算双击；第二次用过就清零，免得连点成两次双击。
@@ -445,6 +450,28 @@ class _NoteEditPageState extends State<NoteEditPage> {
   /// （见 [_suppressKeyboardWhileSelecting]）。
   void _showSoftKeyboard() {
     SystemChannels.textInput.invokeMethod<void>('TextInput.show');
+  }
+
+  void _hideSoftKeyboard() {
+    SystemChannels.textInput.invokeMethod<void>('TextInput.hide');
+  }
+
+  /// 从整页界面（图片预览、手写画布、系统选图）回来之后，把编辑器和输入法
+  /// 都放静。
+  ///
+  /// 退回来的时候框架会把焦点还给编辑器，编辑器一拿到焦点就开输入法连接、
+  /// 顺手把键盘唤出来。这里先把焦点撤掉、键盘收一次，隔一小会儿再看一眼：
+  /// 焦点恢复有时候比这次收键盘还晚，晚到了就再收一次。
+  Future<void> _quietAfterFullScreenPage() async {
+    if (!_lazyKeyboard) return;
+    _focus.unfocus();
+    _hideSoftKeyboard();
+
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    if (!mounted) return;
+    if (_keyboardInset <= 0) return;
+    _focus.unfocus();
+    _hideSoftKeyboard();
   }
 
   /// 「选择」：把选区重新点亮一次。
@@ -489,6 +516,9 @@ class _NoteEditPageState extends State<NoteEditPage> {
   /// 要弹的那个请求会在 [_suppressKeyboardWhileSelecting] 那里被吞掉。
   void _afterMenuAction() {
     _focus.requestFocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _hideSoftKeyboard();
+    });
   }
 
   /// 手机上按下的这一下先别让编辑器去要输入法，等抬起时看是不是双击。
@@ -665,6 +695,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
       // 否则输入法会跟着一起弹出来。
       _focus.unfocus();
       final picked = await ImagePipeline.pickMany(fromCamera: fromCamera);
+      await _quietAfterFullScreenPage();
       if (picked.isEmpty || !mounted) return;
       // 按选中的顺序一张一张插：每张自己占一行，插完光标落到它下面，
       // 所以下一张正好接在后面。
@@ -740,6 +771,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
         builder: (_) => const InkCanvasPage(initialStrokes: []),
       ),
     );
+    await _quietAfterFullScreenPage();
     if (strokes == null || !mounted) return;
 
     final id = const Uuid().v4();
@@ -783,6 +815,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
             InkCanvasPage(initialStrokes: decodeInkStrokes(ink.strokes)),
       ),
     );
+    await _quietAfterFullScreenPage();
     if (strokes == null || !mounted) return;
 
     await services.local.updateInkStrokes(
@@ -813,6 +846,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
         builder: (_) => ImagePreviewPage(path: path, title: p.basename(path)),
       ),
     );
+    await _quietAfterFullScreenPage();
   }
 
   // ---------------------------------------------------------------------
