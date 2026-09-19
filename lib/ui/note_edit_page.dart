@@ -17,6 +17,7 @@ import '../services/note_lock.dart';
 import '../services/rich_body.dart';
 import '../util/note_text.dart';
 import 'ink_canvas_page.dart';
+import 'image_preview_page.dart';
 import 'note_unlock_view.dart';
 import 'widgets/folder_picker.dart';
 import 'widgets/note_embeds.dart';
@@ -274,8 +275,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
 
     if (center) {
       // 手动跳转：不管光标在不在屏幕上，都把它挪到屏幕中间，看得见才安心。
-      final middle =
-          top - (position.viewportDimension - (bottom - top)) / 2;
+      final middle = top - (position.viewportDimension - (bottom - top)) / 2;
       _scrollTo(middle);
       return;
     }
@@ -560,6 +560,10 @@ class _NoteEditPageState extends State<NoteEditPage> {
         baseVersion: 0,
         createdAt: now,
         updatedAt: now,
+        // 跟新建笔记一样要打上「服务端还没有这条」：少了它，推送时会走成
+        // 「更新一条不存在的记录」，同步引擎查不到就当成被别的设备删了，
+        // 刚画好的画会被本地一起抹掉（老版本就是这么丢的）。
+        isNew: true,
       ),
     );
     _insertBlock(BlockEmbed(inkEmbedType, id));
@@ -572,7 +576,12 @@ class _NoteEditPageState extends State<NoteEditPage> {
     if (services == null) return;
 
     final ink = await services.local.findInkById(inkId);
-    if (ink == null || !mounted) return;
+    if (!mounted) return;
+    if (ink == null) {
+      // 老版本的一个同步 bug 会把没上传成功的手写当垃圾删掉，笔迹找不回来了。
+      _toast('这块手写的内容已经丢了，重新画一块吧');
+      return;
+    }
 
     final strokes = await Navigator.of(context).push<List<InkStroke>>(
       MaterialPageRoute(
@@ -593,6 +602,21 @@ class _NoteEditPageState extends State<NoteEditPage> {
     );
     setState(() {});
     unawaited(services.sync.sync());
+  }
+
+  /// 点正文里的图片，打开大图预览（可以滚轮或双指放大）。
+  Future<void> _openImagePreview(String imageId) async {
+    final info = _imageInfo[imageId];
+    final path = info?.path;
+    if (path == null) {
+      _toast('这张图还没同步下来，稍等一下再点');
+      return;
+    }
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ImagePreviewPage(path: path, title: p.basename(path)),
+      ),
+    );
   }
 
   // ---------------------------------------------------------------------
@@ -1121,7 +1145,12 @@ class _NoteEditPageState extends State<NoteEditPage> {
                         placeholder: '写点什么…',
                         editorKey: _editorKey,
                         embedBuilders: [
-                          NoteImageEmbedBuilder(infoOf: _imageInfoOf),
+                          NoteImageEmbedBuilder(
+                            infoOf: _imageInfoOf,
+                            onTap: (id) {
+                              unawaited(_openImagePreview(id));
+                            },
+                          ),
                           NoteInkEmbedBuilder(
                             infoOf: _inkInfoOf,
                             onTap: (id) => unawaited(_openInkCanvas(id)),

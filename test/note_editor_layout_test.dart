@@ -13,6 +13,7 @@ import 'package:sync_notes/data/sync/sync_engine.dart';
 import 'package:sync_notes/main.dart';
 import 'package:sync_notes/services/ink_strokes.dart';
 import 'package:sync_notes/services/rich_body.dart';
+import 'package:sync_notes/ui/image_preview_page.dart';
 import 'package:sync_notes/ui/ink_canvas_page.dart';
 import 'package:sync_notes/ui/note_edit_page.dart';
 import 'package:sync_notes/ui/widgets/ink_view.dart';
@@ -130,6 +131,38 @@ void main() {
     final text = tester.getRect(find.text('后面的文字', findRichText: true));
     final editor = tester.getRect(find.byType(QuillEditor));
     expect(text.top, greaterThan(editor.top + 100));
+  });
+
+  testWidgets('点正文里的图片能打开大图预览，滚轮能放大', (tester) async {
+    await pumpEditor(tester, '看图\n[[img:$imageId]]\n');
+
+    await tester.tap(find.byType(Image).first);
+    await tester.pumpAndSettle();
+    expect(find.byType(ImagePreviewPage), findsOneWidget);
+
+    final viewer = tester.widget<InteractiveViewer>(
+      find.byType(InteractiveViewer),
+    );
+    final transform = viewer.transformationController!;
+    expect(transform.value.getMaxScaleOnAxis(), 1);
+
+    // 鼠标滚轮往上滚＝放大。
+    final center = tester.getCenter(find.byType(InteractiveViewer));
+    final pointer = TestPointer(1, PointerDeviceKind.mouse);
+    pointer.hover(center);
+    await tester.sendEventToBinding(pointer.scroll(const Offset(0, -120)));
+    await tester.pumpAndSettle();
+
+    expect(
+      transform.value.getMaxScaleOnAxis(),
+      greaterThan(1.2),
+      reason: '滚轮没有放大图片',
+    );
+
+    // 「适应屏幕」把缩放还原。
+    await tester.tap(find.byTooltip('适应屏幕'));
+    await tester.pumpAndSettle();
+    expect(transform.value.getMaxScaleOnAxis(), 1);
   });
 
   testWidgets('手写块按画布比例显示，点一下能进画布页', (tester) async {
@@ -256,6 +289,38 @@ void main() {
     expect(editor.focusNode.hasFocus, isTrue, reason: '插完画布焦点要回到编辑器');
   });
 
+  testWidgets('插入手写画布之后，再点它还能打开画布页', (tester) async {
+    await pumpEditor(tester, '第一行');
+
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('插入手写'));
+    await tester.pumpAndSettle();
+
+    // 在画布上随手画一笔，插进正文的才是真笔画而不是空画布。
+    final surface = tester.getRect(find.byType(InkCanvasPage));
+    await tester.dragFrom(
+      surface.center - const Offset(40, 0),
+      const Offset(80, 40),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('完成'));
+    await tester.pumpAndSettle();
+
+    final canvas = find.byWidgetPredicate(
+      (widget) => widget is CustomPaint && widget.painter is InkPainter,
+    );
+    expect(canvas, findsOneWidget);
+
+    await tester.tap(canvas);
+    await tester.pumpAndSettle();
+    expect(
+      find.byType(InkCanvasPage),
+      findsOneWidget,
+      reason: '点正文里的手写块没打开画布页',
+    );
+  });
+
   testWidgets('「回到光标」把看不见的光标拉回屏幕中间', (tester) async {
     final long = List.generate(80, (i) => '第 $i 行，把正文撑得比一屏长').join('\n');
     await pumpEditor(tester, long);
@@ -286,11 +351,7 @@ void main() {
     await tester.tap(find.byTooltip('回到光标'));
     await tester.pumpAndSettle();
 
-    expect(
-      state.position.pixels,
-      greaterThan(0),
-      reason: '「回到光标」没把光标滚回来',
-    );
+    expect(state.position.pixels, greaterThan(0), reason: '「回到光标」没把光标滚回来');
   });
 
   testWidgets('光标跑到看不见的地方，视图会跟着滚过去', (tester) async {

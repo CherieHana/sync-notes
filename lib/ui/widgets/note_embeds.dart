@@ -61,9 +61,12 @@ class NoteInkInfo {
 ///
 /// Quill 自带的图片内嵌是按 URL 加载的，我们的图片存在本机，所以自己接管。
 class NoteImageEmbedBuilder extends EmbedBuilder {
-  const NoteImageEmbedBuilder({required this.infoOf});
+  const NoteImageEmbedBuilder({required this.infoOf, this.onTap});
 
   final NoteImageInfo Function(String imageId) infoOf;
+
+  /// 点图片时回调，用来打开大图预览。
+  final void Function(String imageId)? onTap;
 
   @override
   String get key => BlockEmbed.imageType;
@@ -92,12 +95,15 @@ class NoteImageEmbedBuilder extends EmbedBuilder {
       // 尺寸和左对齐才生效。
       child: Align(
         alignment: Alignment.centerLeft,
-        child: ClipRRect(
-          borderRadius: const BorderRadius.all(Radius.circular(8)),
-          child: SizedBox(
-            width: size.width,
-            height: size.height,
-            child: picture,
+        child: GestureDetector(
+          onTap: onTap == null ? null : () => onTap!(id),
+          child: ClipRRect(
+            borderRadius: const BorderRadius.all(Radius.circular(8)),
+            child: SizedBox(
+              width: size.width,
+              height: size.height,
+              child: picture,
+            ),
           ),
         ),
       ),

@@ -91,10 +91,10 @@ class SyncEngine {
     try {
       pushed += await _pushFolders(device);
       final notes = await _pushNotes(device);
-        pushed += notes.uploaded;
-        conflicts += notes.conflicts;
-        pushed += await _pushImages();
-        pushed += await _pushInks(device);
+      pushed += notes.uploaded;
+      conflicts += notes.conflicts;
+      pushed += await _pushImages();
+      pushed += await _pushInks(device);
     } on RemoteApiException catch (error) {
       return SyncReport(
         pushed: pushed,
@@ -108,9 +108,9 @@ class SyncEngine {
     try {
       pulled += await _pullFolders();
       pulled += await _pullNotes();
-        pulled += await _pullImages();
-        pulled += await _pullInks();
-        await _collectOrphanEmbeds();
+      pulled += await _pullImages();
+      pulled += await _pullInks();
+      await _collectOrphanEmbeds();
     } on RemoteApiException catch (error) {
       return SyncReport(
         pushed: pushed,
@@ -382,7 +382,21 @@ class SyncEngine {
 
       final current = await remote.fetchInkById(ink.id);
       if (current == null) {
-        await local.hardDeleteInk(ink.id);
+        if (ink.baseVersion == 0) {
+          // 本地这条从来没跟服务端对上过号，服务端没有它不等于「被别人删了」。
+          // 这里补一次插入，免得把刚画好的画当成垃圾清掉。
+          final created = await remote.insertInk(
+            id: ink.id,
+            strokes: ink.strokes,
+            canvasWidth: ink.canvasWidth,
+            canvasHeight: ink.canvasHeight,
+            lastDeviceId: device,
+          );
+          await local.applyRemoteInk(created);
+          pushed++;
+        } else {
+          await local.hardDeleteInk(ink.id);
+        }
         continue;
       }
       final retried = await remote.updateInkIfVersion(
@@ -608,11 +622,7 @@ class SyncEngine {
   Future<void> _detachNotesFrom(String folderId) async {
     for (final note in await local.allVisibleNotes()) {
       if (note.folderId == folderId) {
-        await local.setNoteFolder(
-          id: note.id,
-          folderId: null,
-          now: _clock(),
-        );
+        await local.setNoteFolder(id: note.id, folderId: null, now: _clock());
       }
     }
   }

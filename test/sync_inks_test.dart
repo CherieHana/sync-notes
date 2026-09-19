@@ -38,6 +38,26 @@ void main() {
     expect(local.inks[inkId]!.baseVersion, 1);
   });
 
+  test('还没上传过的手写画布，服务端查不到也不会被清掉', () async {
+    // 老版本忘了给新画的画布打「服务端还没有这条」的标记，推送时会走成「更新」，
+    // 服务端查不到就把本地这条当垃圾删了，画上去的笔迹跟着一起没。
+    local.notes['n1'] = localNote(
+      id: 'n1',
+      body: '看图\n[[ink:$inkId]]',
+      version: 1,
+      baseVersion: 1,
+      dirty: false,
+    );
+    local.inks[inkId] = localInk(id: inkId, strokes: '[[2]]');
+
+    final report = await engine.syncNow();
+
+    expect(local.inks[inkId], isNotNull, reason: '刚画好的画布不该被清掉');
+    expect(remote.inks[inkId]!.strokes, '[[2]]');
+    expect(local.inks[inkId]!.dirty, isFalse);
+    expect(report.pushed, 1);
+  });
+
   test('改了笔迹会带版本号上传', () async {
     local.notes['n1'] = localNote(
       id: 'n1',
