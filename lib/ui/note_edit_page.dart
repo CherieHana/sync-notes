@@ -62,6 +62,17 @@ class _NoteEditPageState extends State<NoteEditPage> {
   /// 两次轻点在这个时间内算一次双击。
   static const Duration _tapTimeout = Duration(milliseconds: 320);
 
+  /// 选区浮动菜单的尺寸。Flutter 里这些是私有常量，这里照抄一份：
+  /// 菜单本身高 44，贴在上面时锚点还要再让 8（贴在下方时的间距框架自己会加）。
+  static const double _menuHeight = 44;
+  static const double _menuAboveGap = 8;
+
+  /// 菜单和选区两端抓手之间要留的缝。
+  static const double _menuHandleGap = 30;
+
+  /// 菜单和上面那条格式栏之间要留的缝。
+  static const double _menuToolbarGap = 8;
+
   final FocusNode _focus = FocusNode();
 
   /// 正文外面那层滚动视图的控制器。滚动由页面自己管，理由见 [_editorScroll]。
@@ -427,6 +438,29 @@ class _NoteEditPageState extends State<NoteEditPage> {
     SystemChannels.textInput.invokeMethod<void>(
       visible ? 'TextInput.show' : 'TextInput.hide',
     );
+  }
+
+  /// 「选择」：把选区重新点亮一次。
+  ///
+  /// 两端那两个拖动抓手要「编辑器有焦点 + 选区叠加层在」才会画出来。长按偶尔会
+  /// 出现菜单出来了、抓手没跟上的情况，点这个按钮就把焦点和叠加层都补一遍，
+  /// 抓手随即出现；本来只有光标时，顺手把光标所在的词选上。
+  void _reselectForHandles() {
+    final editor = _editorKey.currentState;
+    final controller = _controller;
+    if (editor == null || controller == null) return;
+
+    var selection = controller.selection;
+    if (selection.isCollapsed) {
+      selection = editor.renderEditor.selectWordAtPosition(
+        TextPosition(offset: selection.extentOffset),
+      );
+    }
+
+    _focus.requestFocus();
+    controller.updateSelection(selection, ChangeSource.local);
+    editor.showToolbar();
+    _scheduleReveal();
   }
 
   /// 手机上按下的这一下先别让编辑器去要输入法，等抬起时看是不是双击。
@@ -1393,25 +1427,65 @@ class _NoteEditPageState extends State<NoteEditPage> {
       );
     }
 
-    // 手机上选区靠上时，这条浮动菜单会盖住顶上的格式栏（安卓端报过）。
-    // 把锚点整体往下让出格式栏的高度：宁可压住一点正文，也别把工具栏挡住。
-    var anchors = editorState.contextMenuAnchors;
-    final toolbarHeight =
-        (_toolbarKey.currentContext?.findRenderObject() as RenderBox?)
-            ?.size
-            .height ??
-        0;
-    if (_lazyKeyboard && toolbarHeight > 0) {
-      final shift = Offset(0, toolbarHeight + 4);
-      final secondary = anchors.secondaryAnchor;
-      anchors = TextSelectionToolbarAnchors(
-        primaryAnchor: anchors.primaryAnchor + shift,
-        secondaryAnchor: secondary == null ? null : secondary + shift,
+    if (_lazyKeyboard) {
+      // 手机上补一个「选择」：长按偶尔只弹出菜单、不给两端的拖动抓手，
+      // 点它一下就把抓手叫回来。放在最前面，最好按。
+      items.insert(
+        0,
+        ContextMenuButtonItem(
+          label: '选择',
+          onPressed: () {
+            editorState.hideToolbar();
+            _reselectForHandles();
+          },
+        ),
       );
     }
+
     return AdaptiveTextSelectionToolbar.buttonItems(
-      anchors: anchors,
+      anchors: _menuAnchorsFor(editorState),
       buttonItems: items,
+    );
+  }
+
+  /// 算选区浮动菜单该待在哪儿。
+  ///
+  /// 这条菜单贴着锚点画：默认贴选区上沿往上长，上面放不下时才翻到选区下方。
+  /// 系统判断「放不放得下」只看屏幕顶边——它不知道我们头顶还有一条格式栏，
+  /// 也不管选区两端的抓手，于是要么压住工具栏，要么压住抓手。
+  ///
+  /// 这里自己算：上方够放，就放在格式栏和选区之间，并给起始抓手留出一截；
+  /// 不够放，就把主锚点扔到屏幕顶上，逼它翻到选区下方去——那边的间距框架
+  /// 自己会算，正好躲开结束抓手。
+  TextSelectionToolbarAnchors _menuAnchorsFor(QuillRawEditorState editorState) {
+    final anchors = editorState.contextMenuAnchors;
+    final secondary = anchors.secondaryAnchor;
+    final toolbar =
+        _toolbarKey.currentContext?.findRenderObject() as RenderBox?;
+    if (secondary == null || toolbar == null || !toolbar.hasSize) {
+      return anchors;
+    }
+
+    final toolbarBottom = toolbar
+        .localToGlobal(Offset(0, toolbar.size.height))
+        .dy;
+    final above = anchors.primaryAnchor;
+    // 菜单底边落在选区上沿之上，中间空出起始抓手的位置。
+    final menuBottom = above.dy - _menuHandleGap;
+    final fitsAbove =
+        menuBottom - _menuHeight >= toolbarBottom + _menuToolbarGap;
+
+    if (fitsAbove) {
+      return TextSelectionToolbarAnchors(
+        // 框架会在锚点基础上再往上抬 8，这里补回来，让底边正好落在 menuBottom。
+        primaryAnchor: Offset(above.dx, menuBottom + _menuAboveGap),
+        secondaryAnchor: secondary,
+      );
+    }
+    return TextSelectionToolbarAnchors(
+      // dy 给 0，框架一定判定「上面放不下」，于是改用下面那条锚点。
+      primaryAnchor: Offset(above.dx, 0),
+      secondaryAnchor: Offset(secondary.dx, secondary.dy + _menuToolbarGap),
     );
   }
 }

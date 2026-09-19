@@ -561,6 +561,83 @@ void main() {
       greaterThanOrEqualTo(toolbar.bottom),
       reason: '浮动菜单盖在格式栏上了',
     );
+    // 选区就在格式栏下面，上方放不下，菜单应该翻到选区下方去，
+    // 而且要让出选区两端的抓手（抓手大约 22 高）。
+    final selectedLine = tester.getRect(find.text('第一行', findRichText: true));
+    expect(
+      menu.top,
+      greaterThanOrEqualTo(selectedLine.bottom + 20),
+      reason: '浮动菜单压在选区或者抓手上',
+    );
+  });
+
+  testWidgets('选区上方有地方时，菜单待在格式栏和选区之间', (tester) async {
+    final long = List.generate(60, (i) => '第 $i 行，把正文撑得比一屏长').join('\n');
+    await pumpEditor(tester, long, platform: TargetPlatform.android);
+    final controller = tester
+        .widget<QuillEditor>(find.byType(QuillEditor))
+        .controller;
+
+    // 点屏幕中间那行，让选区上方空出一大截。
+    final viewport = tester.getRect(find.byType(SingleChildScrollView));
+    await tester.tapAt(Offset(viewport.center.dx, viewport.top + 220));
+    await tester.pumpAndSettle();
+    final caret = controller.selection.baseOffset;
+    controller.updateSelection(
+      TextSelection(baseOffset: caret, extentOffset: caret + 3),
+      ChangeSource.local,
+    );
+    tester
+        .state<QuillRawEditorState>(find.byType(QuillRawEditor))
+        .showToolbar();
+    await tester.pumpAndSettle();
+
+    final toolbar = tester.getRect(find.byType(QuillSimpleToolbar));
+    final menu = tester.getRect(
+      find
+          .descendant(
+            of: find.byType(AdaptiveTextSelectionToolbar),
+            matching: find.byType(Material),
+          )
+          .first,
+    );
+    expect(
+      menu.top,
+      greaterThanOrEqualTo(toolbar.bottom),
+      reason: '浮动菜单盖在格式栏上了',
+    );
+    expect(
+      menu.bottom,
+      lessThanOrEqualTo(viewport.top + 220 - 20),
+      reason: '浮动菜单压住了选区或者起始抓手',
+    );
+  });
+
+  testWidgets('选区菜单里的「选择」把选区重新点亮，抓手才有得拖', (tester) async {
+    await pumpEditor(tester, '第一行文字\n第二行文字', platform: TargetPlatform.android);
+    final controller = tester
+        .widget<QuillEditor>(find.byType(QuillEditor))
+        .controller;
+    final state = tester.state<QuillRawEditorState>(
+      find.byType(QuillRawEditor),
+    );
+
+    controller.updateSelection(
+      const TextSelection(baseOffset: 0, extentOffset: 4),
+      ChangeSource.local,
+    );
+    state.showToolbar();
+    await tester.pumpAndSettle();
+    expect(find.text('选择'), findsOneWidget);
+
+    await tester.tap(find.text('选择'));
+    await tester.pumpAndSettle();
+
+    // 选区还在（没被点成光标），菜单也重新摆出来了。
+    expect(controller.selection.isCollapsed, isFalse);
+    expect(find.byType(AdaptiveTextSelectionToolbar), findsOneWidget);
+    expect(controller.selection.start, 0);
+    expect(controller.selection.end, greaterThanOrEqualTo(4));
   });
 
   testWidgets('打开老笔记会顺手把正文升级成富文本存回去', (tester) async {
