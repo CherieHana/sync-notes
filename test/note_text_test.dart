@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sync_notes/services/rich_body.dart';
 import 'package:sync_notes/util/note_text.dart';
 
 void main() {
@@ -13,7 +14,10 @@ void main() {
   });
 
   test('冲突副本的后缀加在首行末尾，正文其余部分不动', () {
-    final body = buildConflictCopyBody('购物清单\n牛奶', DateTime(2026, 9, 18, 14, 30));
+    final body = buildConflictCopyBody(
+      '购物清单\n牛奶',
+      DateTime(2026, 9, 18, 14, 30),
+    );
     final lines = body.split('\n');
     expect(lines.first, '购物清单（冲突副本 2026-09-18 14:30）');
     expect(lines[1], '牛奶');
@@ -29,10 +33,7 @@ void main() {
     expect(formatListTime(DateTime(2026, 9, 18, 9, 5), now: now), '09:05');
     expect(formatListTime(DateTime(2026, 9, 17, 9, 5), now: now), '昨天');
     expect(formatListTime(DateTime(2026, 3, 2, 9, 5), now: now), '3月2日');
-    expect(
-      formatListTime(DateTime(2025, 3, 2, 9, 5), now: now),
-      '2025年3月2日',
-    );
+    expect(formatListTime(DateTime(2025, 3, 2, 9, 5), now: now), '2025年3月2日');
   });
 
   test('能从正文里挑出全部图片 id', () {
@@ -42,10 +43,10 @@ void main() {
     expect(imageIdsIn(body).toList(), [id1, id2]);
   });
 
-  test('图片标记的生成与解析是对称的', () {
+  test('图片标记写进富文本后还能被认出来', () {
     const id = '33333333-3333-3333-3333-333333333333';
-    expect(imageMarker(id), '[[img:$id]]');
-    expect(imageIdsIn(imageMarker(id)).single, id);
+    final body = RichBody.encode(RichBody.documentFrom('标题\n[[img:$id]]\n'));
+    expect(imageIdsIn(body).single, id);
   });
 
   test('不像标记的文本不会被当成图片', () {

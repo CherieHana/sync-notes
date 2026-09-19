@@ -1,29 +1,106 @@
+import 'dart:convert';
+
+/// 正文现在是富文本（Quill Delta）的 JSON。
+///
+/// 老笔记还是纯文本，带 `[[img:<id>]]` / `[[ink:<id>]]` 这样的标记。
+/// 下面这些函数两种格式都认，所以迁移可以慢慢来：
+/// 打开或编辑到哪一篇，就把哪一篇转成富文本。
+
 /// 正文里内嵌元素的标记。
 ///
-/// `[[img:<uuid>]]` 是插入的图片，`[[ink:<uuid>]]` 是一块手写画布。
-/// 用自定义标记而不是 markdown 语法，是为了让「这里就是一个内嵌块」
-/// 这件事没有歧义——导入的 markdown 里也可能有图片语法，混在一起会认错。
-final RegExp embedTokenPattern = RegExp(r'\[\[(img|ink):([0-9a-fA-F-]{36})\]\]');
+/// 只在**老格式**的纯文本正文里出现。新格式把内嵌块直接存进文档结构，
+/// 不再需要标记。保留它是为了老笔记还能正确解析。
+final RegExp embedTokenPattern = RegExp(
+  r'\[\[(img|ink):([0-9a-fA-F-]{36})\]\]',
+);
+
+/// 把正文按富文本解析。老格式（纯文本）返回 null。
+List<dynamic>? tryDecodeRichBody(String body) {
+  // 富文本一定是 JSON 数组；纯文本几乎不可能以 [ 开头还能解析成数组，
+  // 所以这个判断足够稳。
+  if (!body.trimLeft().startsWith('[')) return null;
+  try {
+    final decoded = jsonDecode(body);
+    return decoded is List ? decoded : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// 从正文里取出给人看的纯文本。
+///
+/// 标题、摘要、搜索都靠它。图片和手写块没有对应文字，
+/// 用占位词代替，免得整篇只有图片时列表里一片空白。
+String notePlainText(String body) {
+  final cached = _plainTextCache[body];
+  if (cached != null) return cached;
+
+  final ops = tryDecodeRichBody(body);
+  final text = ops == null ? body : _plainTextFromOps(ops);
+
+  // 列表每次重建都会问一遍，缓存住避免反复解析 JSON。
+  if (_plainTextCache.length > 500) _plainTextCache.clear();
+  _plainTextCache[body] = text;
+  return text;
+}
+
+final Map<String, String> _plainTextCache = {};
+
+String _plainTextFromOps(List<dynamic> ops) {
+  final buffer = StringBuffer();
+  for (final op in ops) {
+    if (op is! Map) continue;
+    final insert = op['insert'];
+    if (insert is String) {
+      buffer.write(insert);
+    } else if (insert is Map) {
+      buffer.write(insert.containsKey('ink') ? '[手写]' : '[图片]');
+    }
+  }
+  return buffer.toString();
+}
 
 /// 正文里出现过的全部图片 id，用于回收没人引用的图片。
-Iterable<String> imageIdsIn(String body) => embedTokenPattern
-    .allMatches(body)
-    .where((m) => m.group(1) == 'img')
-    .map((m) => m.group(2)!);
+Iterable<String> imageIdsIn(String body) sync* {
+  final ops = tryDecodeRichBody(body);
+  if (ops == null) {
+    yield* embedTokenPattern
+        .allMatches(body)
+        .where((m) => m.group(1) == 'img')
+        .map((m) => m.group(2)!);
+    return;
+  }
+  for (final op in ops) {
+    if (op is! Map) continue;
+    final insert = op['insert'];
+    if (insert is Map && insert['image'] is String) {
+      yield insert['image'] as String;
+    }
+  }
+}
 
 /// 正文里出现过的全部手写画布 id，同样用于回收。
-Iterable<String> inkIdsIn(String body) => embedTokenPattern
-    .allMatches(body)
-    .where((m) => m.group(1) == 'ink')
-    .map((m) => m.group(2)!);
-
-String imageMarker(String id) => '[[img:$id]]';
-
-String inkMarker(String id) => '[[ink:$id]]';
+Iterable<String> inkIdsIn(String body) sync* {
+  final ops = tryDecodeRichBody(body);
+  if (ops == null) {
+    yield* embedTokenPattern
+        .allMatches(body)
+        .where((m) => m.group(1) == 'ink')
+        .map((m) => m.group(2)!);
+    return;
+  }
+  for (final op in ops) {
+    if (op is! Map) continue;
+    final insert = op['insert'];
+    if (insert is Map && insert['ink'] is String) {
+      yield insert['ink'] as String;
+    }
+  }
+}
 
 /// 纯文本笔记的派生信息：标题取第一段非空内容，其余作摘要。
 String noteTitle(String body) {
-  for (final line in body.split('\n')) {
+  for (final line in notePlainText(body).split('\n')) {
     final trimmed = line.trim();
     if (trimmed.isNotEmpty) return trimmed;
   }
@@ -31,7 +108,7 @@ String noteTitle(String body) {
 }
 
 String notePreview(String body) {
-  final lines = body.split('\n');
+  final lines = notePlainText(body).split('\n');
   final titleIndex = lines.indexWhere((l) => l.trim().isNotEmpty);
   if (titleIndex == -1) return '无附加内容';
   final rest = lines
@@ -64,13 +141,45 @@ String formatConflictStamp(DateTime time) {
 }
 
 /// 把「（冲突副本 …）」后缀加在首行标题末尾，正文其余部分原样保留。
+///
+/// 正文可能是富文本，也可能还是老格式，两种都要处理。
 String buildConflictCopyBody(String originalBody, DateTime time) {
   final suffix = '（冲突副本 ${formatConflictStamp(time)}）';
+
+  final ops = tryDecodeRichBody(originalBody);
+  if (ops != null) return _suffixFirstLineOfOps(ops, suffix);
+
   final lines = originalBody.split('\n');
   final titleIndex = lines.indexWhere((l) => l.trim().isNotEmpty);
   if (titleIndex == -1) return '未命名笔记$suffix';
   lines[titleIndex] = '${lines[titleIndex]}$suffix';
   return lines.join('\n');
+}
+
+/// 富文本版本：找到第一段有内容的文字，在后缀在它那一行末尾。
+String _suffixFirstLineOfOps(List<dynamic> ops, String suffix) {
+  final result = <dynamic>[];
+  var done = false;
+
+  for (final op in ops) {
+    if (done || op is! Map || op['insert'] is! String) {
+      result.add(op);
+      continue;
+    }
+
+    final lines = (op['insert'] as String).split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      if (lines[i].trim().isEmpty) continue;
+      lines[i] = '${lines[i]}$suffix';
+      done = true;
+      break;
+    }
+    result.add({...op, 'insert': lines.join('\n')});
+  }
+
+  // 整篇都是图片和手写，没有文字可加后缀，就在最前面补一个标题。
+  if (!done) result.insert(0, {'insert': '未命名笔记$suffix\n'});
+  return jsonEncode(result);
 }
 
 String _two(int value) => value.toString().padLeft(2, '0');

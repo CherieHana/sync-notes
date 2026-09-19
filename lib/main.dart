@@ -1,6 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:flutter_quill/flutter_quill.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'app_services.dart';
@@ -40,6 +42,19 @@ final ThemeData _appTheme = ThemeData(
   ),
 );
 
+/// 富文本工具栏的本地化。
+///
+/// 这三个（加上 Quill 自己的）必须给全：缺了的话正式包里工具栏不会报错，
+/// 而是整条渲染成一块灰条，看起来像「工具栏没加载出来」（踩过）。
+const List<LocalizationsDelegate<dynamic>> appLocalizationsDelegates = [
+  FlutterQuillLocalizations.delegate,
+  GlobalMaterialLocalizations.delegate,
+  GlobalWidgetsLocalizations.delegate,
+  GlobalCupertinoLocalizations.delegate,
+];
+
+const List<Locale> appSupportedLocales = [Locale('zh'), Locale('en')];
+
 /// 根据登录状态在登录页和笔记页之间切换。
 ///
 /// 登录态由 Supabase 持久化，重开 App 会自动恢复，不需要每次输密码。
@@ -58,6 +73,8 @@ class SyncNotesApp extends StatelessWidget {
             title: '备忘录',
             debugShowCheckedModeBanner: false,
             theme: _appTheme,
+            localizationsDelegates: appLocalizationsDelegates,
+            supportedLocales: appSupportedLocales,
             home: const LoginPage(),
           );
         }
@@ -78,7 +95,11 @@ class SyncNotesApp extends StatelessWidget {
 /// 会把 push 出来的页面挂在它自己的 Overlay 下、和首页平级；如果 AppScope 在
 /// MaterialApp 里面，新页面就取不到它，直接白屏。
 class AuthenticatedApp extends StatefulWidget {
-  const AuthenticatedApp({super.key, required this.userId, this.servicesBuilder});
+  const AuthenticatedApp({
+    super.key,
+    required this.userId,
+    this.servicesBuilder,
+  });
 
   final String userId;
 
@@ -125,6 +146,8 @@ class _AuthenticatedAppState extends State<AuthenticatedApp>
         title: '备忘录',
         debugShowCheckedModeBanner: false,
         theme: _appTheme,
+        localizationsDelegates: appLocalizationsDelegates,
+        supportedLocales: appSupportedLocales,
         home: const NotesListPage(),
       ),
     );
@@ -139,6 +162,8 @@ class _MissingConfigApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
+      localizationsDelegates: appLocalizationsDelegates,
+      supportedLocales: appSupportedLocales,
       home: Scaffold(
         body: Center(
           child: ConstrainedBox(

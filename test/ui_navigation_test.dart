@@ -10,6 +10,7 @@
 // 所以能把结构问题挡在提交之前。
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_quill/flutter_quill.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sync_notes/app_services.dart';
 import 'package:sync_notes/data/local/local_store.dart';
@@ -19,6 +20,7 @@ import 'package:sync_notes/main.dart';
 import 'package:sync_notes/services/note_lock.dart';
 import 'package:sync_notes/ui/note_edit_page.dart';
 import 'package:sync_notes/ui/notes_list_page.dart';
+import 'package:sync_notes/util/note_text.dart';
 
 import 'support/fake_store.dart';
 
@@ -39,20 +41,25 @@ AppServices buildTestServices(String userId) {
 
 Future<void> pumpApp(WidgetTester tester) async {
   await tester.pumpWidget(
-    AuthenticatedApp(userId: 'ui-test-user', servicesBuilder: buildTestServices),
+    AuthenticatedApp(
+      userId: 'ui-test-user',
+      servicesBuilder: buildTestServices,
+    ),
   );
   await tester.pumpAndSettle();
 }
 
 /// 直接把依赖挂到树上，方便测试里预置数据。
-Future<void> pumpWithServices(
-  WidgetTester tester,
-  AppServices services,
-) async {
+Future<void> pumpWithServices(WidgetTester tester, AppServices services) async {
   await tester.pumpWidget(
     AppScope(
       services: services,
-      child: const MaterialApp(home: NotesListPage()),
+      child: MaterialApp(
+        // 工具栏要 Quill 的本地化代理，缺了编辑页会抛异常。
+        localizationsDelegates: appLocalizationsDelegates,
+        supportedLocales: appSupportedLocales,
+        home: const NotesListPage(),
+      ),
     ),
   );
   await tester.pumpAndSettle();
@@ -85,8 +92,13 @@ void main() {
 
     expect(tester.takeException(), isNull, reason: '打开编辑页不该抛异常');
     expect(find.byType(NoteEditPage), findsOneWidget);
-    expect(find.byType(TextField), findsOneWidget, reason: '正文输入框应该在');
-    expect(find.text('写点什么…'), findsOneWidget, reason: '空白笔记应显示提示文案');
+    expect(find.byType(QuillEditor), findsOneWidget, reason: '正文编辑器应该在');
+    expect(find.byType(QuillSimpleToolbar), findsOneWidget, reason: '格式工具栏应该在');
+    expect(
+      find.textContaining('写点什么', findRichText: true),
+      findsWidgets,
+      reason: '空白笔记应显示提示文案',
+    );
   });
 
   testWidgets('编辑页里敲的字会落到本地库', (tester) async {
@@ -94,7 +106,11 @@ void main() {
     await tester.pumpWidget(
       AppScope(
         services: services,
-        child: const MaterialApp(home: NotesListPage()),
+        child: MaterialApp(
+          localizationsDelegates: appLocalizationsDelegates,
+          supportedLocales: appSupportedLocales,
+          home: const NotesListPage(),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -102,13 +118,25 @@ void main() {
     await tester.tap(find.byType(FloatingActionButton));
     await tester.pumpAndSettle();
 
-    await tester.enterText(find.byType(TextField), '开会记一下');
+    // 富文本编辑器不是 TextField：模拟输入法送一次「当前正文 + 新字」。
+    //
+    // 两个细节都要对：文本要带上结尾的换行（Quill 的正文一定以换行收尾），
+    // 光标要停在换行**之前**。真机的输入法就是这个样子；光标跑到换行后面
+    // 会被 Quill 算成「整篇被替换」，踩到它自己 insert 的越界断言。
+    await tester.tap(find.byType(QuillEditor));
+    await tester.pump();
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '开会记一下\n',
+        selection: TextSelection.collapsed(offset: 5),
+      ),
+    );
     await tester.pump(const Duration(seconds: 1)); // 等自动保存的防抖
     await tester.pumpAndSettle();
 
     final notes = await services.local.watchVisibleNotes().first;
     expect(notes, hasLength(1));
-    expect(notes.single.body, '开会记一下');
+    expect(notePlainText(notes.single.body), contains('开会记一下'));
   });
 
   testWidgets('列表页有退出登录入口', (tester) async {
@@ -204,9 +232,7 @@ void main() {
   testWidgets('长按笔记弹出的菜单里有删除', (tester) async {
     final services = buildTestServices('ui-test-user');
     // 远端也要有这条，否则同步时会被当成「服务端删了」而被重建。
-    (services.remote as FakeRemoteApi).seed(
-      remoteNote(id: 'n1', body: '要被删的'),
-    );
+    (services.remote as FakeRemoteApi).seed(remoteNote(id: 'n1', body: '要被删的'));
     await services.local.createNote(
       localNote(
         id: 'n1',
@@ -269,7 +295,13 @@ void main() {
   testWidgets('左滑删除后能点撤销把笔记找回来', (tester) async {
     final services = buildTestServices('ui-test-user');
     await services.local.createNote(
-      localNote(id: 'n1', body: '别删我', version: 1, baseVersion: 1, dirty: false),
+      localNote(
+        id: 'n1',
+        body: '别删我',
+        version: 1,
+        baseVersion: 1,
+        dirty: false,
+      ),
     );
     await pumpWithServices(tester, services);
 
@@ -347,6 +379,6 @@ void main() {
     await settleCrypto(tester);
     await tester.pumpAndSettle();
     expect(find.text('这篇笔记加了锁，输入口令才能打开'), findsNothing);
-    expect(find.textContaining('正文'), findsWidgets);
+    expect(find.textContaining('正文', findRichText: true), findsWidgets);
   });
 }

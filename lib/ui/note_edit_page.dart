@@ -2,31 +2,28 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter_quill/flutter_quill.dart';
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
 import '../app_services.dart';
 import '../data/local/local_store.dart';
-import '../services/image_pipeline.dart';
 import '../services/clipboard_image.dart';
 import '../services/external_drop.dart';
 import '../services/file_import.dart';
+import '../services/image_pipeline.dart';
 import '../services/ink_strokes.dart';
 import '../services/note_lock.dart';
-import '../services/undo_stack.dart';
+import '../services/rich_body.dart';
+import '../util/note_text.dart';
 import 'ink_canvas_page.dart';
 import 'note_unlock_view.dart';
 import 'widgets/folder_picker.dart';
-import 'widgets/inline_note_controller.dart';
+import 'widgets/note_embeds.dart';
 import 'widgets/text_prompt_dialog.dart';
 
-/// 撤回用的快照：编辑态文本加当时对应的内嵌块顺序。
-///
-/// 两样都要存——只知道文本的话，撤回一次「删掉图片」的操作就找不回那张图了。
-typedef _Snapshot = ({String display, List<EmbedRef> embeds});
-
-/// 编辑页。全屏纯文本，停止输入 0.8 秒自动落库，返回时再补一次。
+/// 编辑页。正文是富文本（加粗、斜体、下划线、颜色、字号、高亮），
+/// 停止输入 0.8 秒自动落库，返回时再补一次。
 ///
 /// 只从本地库读一次内容，不做实时回写：避免远处推来的版本把正在打字的
 /// 光标位置冲掉。远端变化会体现在列表上，冲突副本机制保证内容不丢。
@@ -43,23 +40,18 @@ class _NoteEditPageState extends State<NoteEditPage> {
   static const Duration _autosaveDelay = Duration(milliseconds: 800);
   static const Duration _imageRetryDelay = Duration(seconds: 3);
 
-  static const TextStyle _bodyStyle = TextStyle(fontSize: 16, height: 1.6);
-
-  /// 正文的行高样式。
-  ///
-  /// 这里必须显式传一个 `forceStrutHeight: false` 的 strut。
-  /// EditableText 在没收到 strutStyle 时会自己造一个**强制固定行高**的，
-  /// 结果图片占位符撑不开所在行，上下各溢出一大截，把前后的文字盖住。
-  /// 普通 Text 没有这个默认行为，所以同样的内容放在 Text 里是正常的。
-  static final StrutStyle _bodyStrut = StrutStyle.fromTextStyle(
-    _bodyStyle,
-    forceStrutHeight: false,
-  );
+  /// 字号档位。Quill 的字号只有 small/normal/large/huge 四档，
+  /// 默认是 10/18/22，这里换成能覆盖大号需求的数值。
+  static const double _sizeSmall = 12;
+  static const double _sizeNormal = 16;
+  static const double _sizeLarge = 22;
+  static const double _sizeHuge = 32;
 
   final FocusNode _focus = FocusNode();
-  final UndoStack<_Snapshot> _undo = UndoStack<_Snapshot>();
+  final ScrollController _scroll = ScrollController();
 
-  InlineNoteController? _controller;
+  QuillController? _controller;
+  StreamSubscription<DocChange>? _changes;
   AppServices? _services;
   LocalNote? _note;
   Timer? _debounce;
@@ -67,18 +59,19 @@ class _NoteEditPageState extends State<NoteEditPage> {
   StreamSubscription<DroppedContent>? _dropSubscription;
 
   bool _loaded = false;
-  bool _suppressChanges = false;
   bool _needsUnlock = false;
 
-  String _lastDisplay = '';
-  List<EmbedRef> _embeds = const [];
+  /// 最近一次看到的正文。用来判断文档是不是真的变了（动光标不算）。
+  String _lastBody = '';
+
+  /// 已经落库的正文，没变就不用再写一次，也就不会白推一次同步。
   String _lastSavedBody = '';
 
   /// 图片 id → 渲染信息（本机路径与宽高比）。
-  final Map<String, InlineImageInfo> _imageInfo = {};
+  final Map<String, NoteImageInfo> _imageInfo = {};
 
   /// 手写画布 id → 笔迹与比例。
-  final Map<String, InlineInkInfo> _inkInfo = {};
+  final Map<String, NoteInkInfo> _inkInfo = {};
 
   @override
   void didChangeDependencies() {
@@ -99,9 +92,10 @@ class _NoteEditPageState extends State<NoteEditPage> {
     _debounce?.cancel();
     _imageRetry?.cancel();
     unawaited(_dropSubscription?.cancel());
-    _controller?.removeListener(_onChanged);
+    unawaited(_changes?.cancel());
     _controller?.dispose();
     _focus.dispose();
+    _scroll.dispose();
     super.dispose();
   }
 
@@ -121,67 +115,46 @@ class _NoteEditPageState extends State<NoteEditPage> {
       _note = note;
       _needsUnlock = locked;
     });
-    if (locked) return;
+    if (locked || _controller != null) return;
 
-    final display = InlineNoteController.toDisplay(note.body);
-      final controller =
-          _controller ??
-          (InlineNoteController(
-            embedsOf: () => _embeds,
-            imageInfoOf: _imageInfoOf,
-            inkInfoOf: _inkInfoOf,
-            onTapInk: (id) => unawaited(_openInkCanvas(id)),
-          )..addListener(_onChanged));
-      _controller = controller;
-      _applySnapshot(
-        (display: display.display, embeds: display.embeds),
-        moveCursorToEnd: true,
-      );
-      _lastSavedBody = note.body;
-      unawaited(_resolveEmbeds(display.embeds));
-  }
-
-  /// 把一份快照写进编辑框，同时同步内部记录。
-  void _applySnapshot(_Snapshot snapshot, {bool moveCursorToEnd = false}) {
-    final controller = _controller!;
-    _suppressChanges = true;
-    controller.value = TextEditingValue(
-      text: snapshot.display,
-      selection: TextSelection.collapsed(
-        offset: moveCursorToEnd
-            ? snapshot.display.length
-            : controller.selection.baseOffset.clamp(
-                0,
-                snapshot.display.length,
-              ),
-      ),
+    final document = RichBody.documentFrom(note.body);
+    final controller = QuillController(
+      document: document,
+      // 光标落在正文末尾，接着就能往下写。
+      selection: TextSelection.collapsed(offset: document.length - 1),
     );
-      _suppressChanges = false;
-      _lastDisplay = snapshot.display;
-      _embeds = snapshot.embeds;
+    _controller = controller;
+    _changes = controller.document.changes.listen((_) => _onChanged());
+    _lastBody = note.body;
+    _lastSavedBody = note.body;
+
+    // 老笔记存的是纯文本，第一次打开就换成富文本存回去，之后不用再转。
+    final body = RichBody.encode(document);
+    if (body != note.body) {
+      _lastBody = body;
+      _lastSavedBody = body;
+      final now = DateTime.now();
+      await services.local.updateBody(id: note.id, body: body, now: now);
+      _note = note.copyWith(body: body, updatedAt: now);
+      unawaited(services.sync.sync());
+    }
+
+    unawaited(_resolveEmbeds(imageIdsIn(body).toSet(), inkIdsIn(body).toSet()));
+    if (mounted) setState(() {});
   }
 
   void _onChanged() {
-    if (_suppressChanges) return;
     final controller = _controller;
     if (controller == null) return;
 
-    final display = controller.text;
-    if (display == _lastDisplay) return;
-
-      final snapshot = (display: _lastDisplay, embeds: _embeds);
-      final nextEmbeds = InlineNoteController.embedsAfterEdit(
-        oldDisplay: _lastDisplay,
-        newDisplay: display,
-        embeds: _embeds,
-      );
-
-      _undo.record(snapshot);
-      _lastDisplay = display;
-      _embeds = nextEmbeds;
+    final body = RichBody.encode(controller.document);
+    if (body == _lastBody) return;
+    _lastBody = body;
 
     _debounce?.cancel();
     _debounce = Timer(_autosaveDelay, () => unawaited(_save()));
+
+    unawaited(_resolveEmbeds(imageIdsIn(body).toSet(), inkIdsIn(body).toSet()));
   }
 
   Future<void> _save() async {
@@ -191,7 +164,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
     if (services == null || note == null || controller == null) return;
     if (_needsUnlock) return;
 
-      final body = InlineNoteController.toDocument(controller.text, _embeds);
+    final body = RichBody.encode(controller.document);
     if (body == _lastSavedBody) return;
     _lastSavedBody = body;
 
@@ -209,7 +182,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
     final controller = _controller;
     if (services == null || note == null || controller == null) return;
     if (_needsUnlock) return;
-    if (controller.text.trim().isNotEmpty) return;
+    if (controller.document.toPlainText().trim().isNotEmpty) return;
 
     if (note.isNew) {
       // 从没上传过，直接删掉，服务端不会留垃圾记录。
@@ -224,81 +197,88 @@ class _NoteEditPageState extends State<NoteEditPage> {
   // 撤回
   // ---------------------------------------------------------------------
 
+  /// 撤回一步。Quill 自己记着这份文档的历史（插图片、改样式都算），
+  /// 而且是内存里的，退出这篇笔记就没了——正好是需求要的行为。
   void _undoStep() {
-    final previous = _undo.undo();
-    if (previous == null) return;
-      setState(() => _applySnapshot(previous));
-      unawaited(_save());
-      unawaited(_resolveEmbeds(previous.embeds));
+    final controller = _controller;
+    if (controller == null || !controller.hasUndo) return;
+    controller.undo();
+    unawaited(_save());
+  }
+
+  // ---------------------------------------------------------------------
+  // 内嵌块的渲染数据
+  // ---------------------------------------------------------------------
+
+  NoteImageInfo _imageInfoOf(String imageId) =>
+      _imageInfo[imageId] ?? const NoteImageInfo();
+
+  NoteInkInfo _inkInfoOf(String inkId) =>
+      _inkInfo[inkId] ?? const NoteInkInfo();
+
+  /// 把内嵌块需要的数据准备好：图片要本机路径，手写要笔迹。
+  /// 还没同步下来的先留空，靠 [_scheduleRetry] 过几秒再试。
+  Future<void> _resolveEmbeds(Set<String> imageIds, Set<String> inkIds) async {
+    final services = _services;
+    if (services == null) return;
+
+    var changed = false;
+    for (final id in imageIds) {
+      if (_imageInfo[id]?.path != null) continue;
+      final exists = await services.local.imageFileExists(id);
+      final row = await services.local.findImageById(id);
+      final path = exists ? await services.local.imageFilePath(id) : null;
+      final width = row?.width;
+      final height = row?.height;
+      final info = NoteImageInfo(
+        path: path,
+        // 按原始比例排版。比例来自图片元数据，文件还没下回来时也能算。
+        aspectRatio: (width != null && height != null && height > 0)
+            ? width / height
+            : 4 / 3,
+      );
+      if (_imageInfo[id]?.path != info.path ||
+          _imageInfo[id]?.aspectRatio != info.aspectRatio) {
+        _imageInfo[id] = info;
+        changed = true;
+      }
+    }
+
+    for (final id in inkIds) {
+      if (_inkInfo[id]?.strokes != null) continue;
+      final ink = await services.local.findInkById(id);
+      if (ink == null) continue;
+      _inkInfo[id] = NoteInkInfo(
+        strokes: decodeInkStrokes(ink.strokes),
+        aspectRatio: ink.aspectRatio,
+      );
+      changed = true;
+    }
+
+    if (changed && mounted) setState(() {});
+    _scheduleRetry(imageIds, inkIds);
+  }
+
+  /// 有图片或手写还没下回来时，隔几秒重试一次，等同步把文件拉回来。
+  void _scheduleRetry(Set<String> imageIds, Set<String> inkIds) {
+    final imagesReady = imageIds.every((id) => _imageInfo[id]?.path != null);
+    final inksReady = inkIds.every((id) => _inkInfo[id]?.strokes != null);
+    _imageRetry?.cancel();
+    if (imagesReady && inksReady) return;
+
+    _imageRetry = Timer(_imageRetryDelay, () {
+      final controller = _controller;
+      if (!mounted || controller == null) return;
+      final body = RichBody.encode(controller.document);
+      unawaited(
+        _resolveEmbeds(imageIdsIn(body).toSet(), inkIdsIn(body).toSet()),
+      );
+    });
   }
 
   // ---------------------------------------------------------------------
   // 图片
   // ---------------------------------------------------------------------
-
-  InlineImageInfo _imageInfoOf(String imageId) =>
-      _imageInfo[imageId] ?? const InlineImageInfo();
-
-  InlineInkInfo _inkInfoOf(String inkId) =>
-      _inkInfo[inkId] ?? const InlineInkInfo();
-
-  /// 把内嵌块需要的数据准备好：图片要本机路径，手写要笔迹。
-  /// 还没同步下来的先留空，靠 [_scheduleImageRetry] 过几秒重试。
-  Future<void> _resolveEmbeds(List<EmbedRef> embeds) async {
-    final services = _services;
-    if (services == null) return;
-
-    var changed = false;
-    for (final embed in embeds) {
-      switch (embed.kind) {
-        case EmbedKind.image:
-          if (_imageInfo[embed.id]?.path != null) continue;
-          final exists = await services.local.imageFileExists(embed.id);
-          final path = exists
-              ? await services.local.imageFilePath(embed.id)
-              : null;
-          final row = await services.local.findImageById(embed.id);
-          final width = row?.width;
-          final height = row?.height;
-          final info = InlineImageInfo(
-            path: path,
-            // 按原始比例排版。固定宽度会把窄图压扁、让宽图撑破一行。
-            aspectRatio: (width != null && height != null && height > 0)
-                ? width / height
-                : 4 / 3,
-          );
-          if (_imageInfo[embed.id]?.path != info.path ||
-              _imageInfo[embed.id]?.aspectRatio != info.aspectRatio) {
-            _imageInfo[embed.id] = info;
-            changed = true;
-          }
-        case EmbedKind.ink:
-          if (_inkInfo[embed.id]?.strokes != null) continue;
-          final ink = await services.local.findInkById(embed.id);
-          if (ink == null) continue;
-          _inkInfo[embed.id] = InlineInkInfo(
-            strokes: decodeInkStrokes(ink.strokes),
-            aspectRatio: ink.aspectRatio,
-          );
-          changed = true;
-      }
-    }
-    if (changed && mounted) setState(() {});
-  }
-
-  /// 有图片还没下回来时，隔几秒重试一次，等同步把文件拉回来。
-  void _scheduleImageRetry() {
-    _imageRetry?.cancel();
-    final imagesReady = _imageInfo.values.every((info) => info.path != null);
-    final inksReady = _inkInfo.values.every((info) => info.strokes != null);
-    if (imagesReady && inksReady) return;
-    _imageRetry = Timer(_imageRetryDelay, () {
-      if (!mounted) return;
-      unawaited(
-        _resolveEmbeds(_embeds).then((_) => _scheduleImageRetry()),
-      );
-    });
-  }
 
   Future<void> _insertImage({required bool fromCamera}) async {
     if (_services == null) return;
@@ -353,7 +333,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
         updatedAt: now,
       ),
     );
-    _appendEmbed(id, EmbedKind.image);
+    _insertBlock(BlockEmbed.image(id));
     unawaited(services.sync.sync());
   }
 
@@ -385,7 +365,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
         updatedAt: now,
       ),
     );
-    _appendEmbed(id, EmbedKind.ink);
+    _insertBlock(BlockEmbed(inkEmbedType, id));
     unawaited(services.sync.sync());
   }
 
@@ -399,9 +379,8 @@ class _NoteEditPageState extends State<NoteEditPage> {
 
     final strokes = await Navigator.of(context).push<List<InkStroke>>(
       MaterialPageRoute(
-        builder: (_) => InkCanvasPage(
-          initialStrokes: decodeInkStrokes(ink.strokes),
-        ),
+        builder: (_) =>
+            InkCanvasPage(initialStrokes: decodeInkStrokes(ink.strokes)),
       ),
     );
     if (strokes == null || !mounted) return;
@@ -411,12 +390,55 @@ class _NoteEditPageState extends State<NoteEditPage> {
       strokes: encodeInkStrokes(strokes),
       now: DateTime.now(),
     );
-    _inkInfo[inkId] = InlineInkInfo(
+    _inkInfo[inkId] = NoteInkInfo(
       strokes: strokes,
       aspectRatio: ink.aspectRatio,
     );
     setState(() {});
     unawaited(services.sync.sync());
+  }
+
+  // ---------------------------------------------------------------------
+  // 往正文里插东西
+  // ---------------------------------------------------------------------
+
+  /// 在光标处插一个块级内嵌（图片或手写画布），让它独占一行。
+  void _insertBlock(Embeddable embed) {
+    final controller = _controller;
+    if (controller == null) return;
+
+    final selection = controller.selection;
+    final offset = selection.isValid
+        ? selection.start
+        : controller.document.length - 1;
+    final caret = RichBody.insertBlockEmbed(controller.document, offset, embed);
+    controller.updateSelection(
+      TextSelection.collapsed(offset: caret),
+      ChangeSource.local,
+    );
+    unawaited(_save());
+  }
+
+  /// 在光标处插入一段文字。
+  void _insertTextAtCaret(String text) {
+    final controller = _controller;
+    if (controller == null || text.isEmpty) return;
+
+    final document = controller.document;
+    final selection = controller.selection;
+    final start = (selection.isValid ? selection.start : document.length - 1)
+        .clamp(0, document.length);
+    final end = (selection.isValid ? selection.end : document.length - 1).clamp(
+      start,
+      document.length,
+    );
+    if (end > start) document.delete(start, end - start);
+    document.insert(start, text);
+    controller.updateSelection(
+      TextSelection.collapsed(offset: start + text.length),
+      ChangeSource.local,
+    );
+    unawaited(_save());
   }
 
   // ---------------------------------------------------------------------
@@ -474,79 +496,8 @@ class _NoteEditPageState extends State<NoteEditPage> {
     }
   }
 
-    /// 在光标处插入一段文字，保持内嵌块的顺序不变。
-    void _insertTextAtCaret(String text) {
-    final controller = _controller;
-    if (controller == null) return;
-
-    _undo.breakSegment();
-    final oldDisplay = controller.text;
-    final selection = controller.selection;
-    final start = selection.isValid ? selection.start : oldDisplay.length;
-    final end = selection.isValid ? selection.end : oldDisplay.length;
-    final newDisplay = oldDisplay.replaceRange(start, end, text);
-      final newEmbeds = InlineNoteController.embedsAfterEdit(
-        oldDisplay: oldDisplay,
-        newDisplay: newDisplay,
-        embeds: _embeds,
-      );
-
-      _undo.record((display: oldDisplay, embeds: _embeds));
-      setState(() {
-        _applySnapshot(
-          (display: newDisplay, embeds: newEmbeds),
-          moveCursorToEnd: false,
-        );
-      controller.selection = TextSelection.collapsed(
-        offset: start + text.length,
-      );
-    });
-    unawaited(_save());
-  }
-
-    /// 在光标处放一个内嵌块（图片或手写画布），并且让它独占一行。
-    void _appendEmbed(String id, EmbedKind kind) {
-      final controller = _controller;
-      if (controller == null) return;
-
-    _undo.breakSegment();
-    final oldDisplay = controller.text;
-    final selection = controller.selection;
-    final start = selection.isValid ? selection.start : oldDisplay.length;
-    final end = selection.isValid ? selection.end : oldDisplay.length;
-
-    final before = oldDisplay.substring(0, start);
-    final after = oldDisplay.substring(end);
-    final padBefore = before.isEmpty || before.endsWith('\n') ? '' : '\n';
-    final padAfter = after.isEmpty || after.startsWith('\n') ? '' : '\n';
-    final inserted = '$padBefore${InlineNoteController.placeholder}$padAfter';
-
-      final embeds = List<EmbedRef>.from(_embeds)
-        ..insert(
-          InlineNoteController.countPlaceholders(before),
-          EmbedRef(kind, id),
-        );
-      final snapshot = (
-        display: '$before$inserted$after',
-        embeds: embeds,
-      );
-
-      _undo.record((display: oldDisplay, embeds: _embeds));
-      setState(() {
-        _applySnapshot(snapshot, moveCursorToEnd: false);
-        // 光标停在块后面，接着就能打字。
-        controller.selection = TextSelection.collapsed(
-          offset: before.length + inserted.length,
-        );
-      });
-
-      unawaited(_resolveEmbeds(embeds));
-    unawaited(_save());
-    _scheduleImageRetry();
-  }
-
   // ---------------------------------------------------------------------
-  // 加锁
+  // 加锁与目录
   // ---------------------------------------------------------------------
 
   /// 换个目录。放一份在编辑页里，是因为「写到一半想起来该归到别的目录」
@@ -572,10 +523,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
       folderId: folderId,
       now: DateTime.now(),
     );
-    _note = note.copyWith(
-      folderId: folderId,
-      clearFolderId: folderId == null,
-    );
+    _note = note.copyWith(folderId: folderId, clearFolderId: folderId == null);
     unawaited(services.sync.sync());
   }
 
@@ -785,9 +733,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
       hint: '登录密码',
       // 登录密码和笔记口令不是一回事，这里保持遮蔽。
       obscureText: true,
-      helperText: email.isEmpty
-          ? '需要联网向服务器确认'
-          : '账号：$email\n需要联网向服务器确认',
+      helperText: email.isEmpty ? '需要联网向服务器确认' : '账号：$email\n需要联网向服务器确认',
     );
   }
 
@@ -808,37 +754,13 @@ class _NoteEditPageState extends State<NoteEditPage> {
       onPopInvokedWithResult: (didPop, _) {
         if (didPop) unawaited(_finalize());
       },
-      child: Shortcuts(
-        // 覆盖 Flutter 自带的编辑器撤回：我们用自己那套，
-        // 才能把「撤回删除图片」也处理对。这个 Shortcuts 比
-        // DefaultTextEditingShortcuts 更靠近输入框，所以会先拿到按键。
-        shortcuts: const {
-          SingleActivator(LogicalKeyboardKey.keyZ, control: true):
-              _UndoNoteIntent(),
-        },
-        child: Actions(
-          actions: {
-            _UndoNoteIntent: CallbackAction<_UndoNoteIntent>(
-              onInvoke: (_) {
-                _undoStep();
-                return null;
-              },
-            ),
-          },
-          child: Focus(
-            focusNode: _focus,
-            child: Scaffold(
-              appBar: _buildAppBar(),
-              body: _buildBody(),
-            ),
-          ),
-        ),
-      ),
+      child: Scaffold(appBar: _buildAppBar(), body: _buildBody()),
     );
   }
 
   PreferredSizeWidget _buildAppBar() {
     final note = _note;
+    final controller = _controller;
     return AppBar(
       leading: IconButton(
         icon: const Icon(Icons.arrow_back),
@@ -851,13 +773,13 @@ class _NoteEditPageState extends State<NoteEditPage> {
       ),
       centerTitle: true,
       actions: [
-        if (!_needsUnlock)
+        if (!_needsUnlock && controller != null)
           ListenableBuilder(
-            listenable: _undo,
+            listenable: controller,
             builder: (context, _) => IconButton(
               tooltip: '撤回',
               icon: const Icon(Icons.undo),
-              onPressed: _undo.canUndo ? _undoStep : null,
+              onPressed: controller.hasUndo ? _undoStep : null,
             ),
           ),
         if (!_needsUnlock && note != null)
@@ -926,53 +848,116 @@ class _NoteEditPageState extends State<NoteEditPage> {
     }
 
     return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-        child: TextField(
-          controller: controller,
-          autofocus: true,
-          maxLines: null,
-          expands: true,
-          textAlignVertical: TextAlignVertical.top,
-          keyboardType: TextInputType.multiline,
-          style: _bodyStyle,
-          strutStyle: _bodyStrut,
-          decoration: const InputDecoration(
-            border: InputBorder.none,
-            hintText: '写点什么…',
+      child: Column(
+        children: [
+          _buildToolbar(controller),
+          const Divider(height: 1),
+          Expanded(
+            child: QuillEditor.basic(
+              controller: controller,
+              focusNode: _focus,
+              scrollController: _scroll,
+              config: QuillEditorConfig(
+                autoFocus: true,
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                placeholder: '写点什么…',
+                embedBuilders: [
+                  NoteImageEmbedBuilder(infoOf: _imageInfoOf),
+                  NoteInkEmbedBuilder(
+                    infoOf: _inkInfoOf,
+                    onTap: (id) => unawaited(_openInkCanvas(id)),
+                  ),
+                ],
+                contextMenuBuilder: _buildContextMenu,
+                // 只接管字号属性的渲染，不动 DefaultStyles。
+                //
+                // 自己拼一个 DefaultStyles 会把主题带过来的文字颜色丢掉，
+                // 结果是正文全白、在白底上完全看不见（踩过）。
+                // 这个扩展点在默认样式之后再合并，正好用来覆盖字号。
+                customStyleBuilder: (attribute) =>
+                    attribute.key == Attribute.size.key
+                    ? TextStyle(fontSize: _fontSizeFor(attribute.value))
+                    : const TextStyle(),
+              ),
+            ),
           ),
-          contextMenuBuilder: _buildContextMenu,
-        ),
+        ],
       ),
     );
   }
+
+  /// 格式工具栏。要求的就是这六样：加粗、斜体、下划线、颜色、字号、高亮。
+  ///
+  /// 注意工具栏自己会用「箭头 + 溢出列表」处理放不下的按钮，所以必须给它
+  /// 一个有界宽度，不能塞进横向滚动的容器里——那样宽度变成无界，
+  /// 它内部带 flex 的 Row 会直接报错。
+  Widget _buildToolbar(QuillController controller) {
+    return QuillSimpleToolbar(
+      controller: controller,
+      config: const QuillSimpleToolbarConfig(
+        showFontFamily: false,
+        showFontSize: true,
+        showBoldButton: true,
+        showItalicButton: true,
+        showUnderLineButton: true,
+        showColorButton: true,
+        showBackgroundColorButton: true,
+        // 没有放「清除格式」：多一个按钮工具栏就挤到边框上了，
+        // 选中后重新点一次同样的按钮就能取消该样式。
+        showClearFormat: false,
+        showUndo: false,
+        showRedo: false,
+        showSearchButton: false,
+        showStrikeThrough: false,
+        showInlineCode: false,
+        showSubscript: false,
+        showSuperscript: false,
+        showHeaderStyle: false,
+        showListNumbers: false,
+        showListBullets: false,
+        showListCheck: false,
+        showCodeBlock: false,
+        showQuote: false,
+        showIndent: false,
+        showLink: false,
+        showAlignmentButtons: false,
+        showLineHeightButton: false,
+        showSmallButton: false,
+        showDirection: false,
+        multiRowsDisplay: false,
+      ),
+    );
+  }
+
+  /// Quill 的字号只有 small/normal/large/huge 四档，这里映射成具体像素值。
+  static double _fontSizeFor(Object? value) => switch (value) {
+    'small' => _sizeSmall,
+    'large' => _sizeLarge,
+    'huge' => _sizeHuge,
+    _ => _sizeNormal,
+  };
 
   /// 右键（长按）菜单。桌面端额外挂一个「粘贴图片」：
   /// Flutter 自带的粘贴只处理文本，从截图工具或浏览器复制的图片粘不进来。
   Widget _buildContextMenu(
     BuildContext context,
-    EditableTextState editableTextState,
+    QuillRawEditorState editorState,
   ) {
-    final items = [...editableTextState.contextMenuButtonItems];
+    final items = [...editorState.contextMenuButtonItems];
     if (ClipboardImage.isSupported) {
       items.add(
         ContextMenuButtonItem(
           label: '粘贴图片',
           onPressed: () {
-            editableTextState.hideToolbar();
+            editorState.hideToolbar();
             unawaited(_pasteImageFromClipboard());
           },
         ),
       );
     }
     return AdaptiveTextSelectionToolbar.buttonItems(
-      anchors: editableTextState.contextMenuAnchors,
+      anchors: editorState.contextMenuAnchors,
       buttonItems: items,
     );
   }
-}
-
-/// 自定义的撤回意图，避免和 Flutter 内置的撤回撞车。
-class _UndoNoteIntent extends Intent {
-  const _UndoNoteIntent();
 }

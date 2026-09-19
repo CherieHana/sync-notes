@@ -6,6 +6,7 @@
 //
 // 它渲染的是真实界面代码，只是把数据和字体换成可控的：笔记是编的，
 // 字体用系统里的思源黑体，否则测试环境默认字体会把中文画成方块。
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -17,6 +18,7 @@ import 'package:sync_notes/app_services.dart';
 import 'package:sync_notes/data/local/local_store.dart';
 import 'package:sync_notes/data/sync/sync_controller.dart';
 import 'package:sync_notes/data/sync/sync_engine.dart';
+import 'package:sync_notes/main.dart';
 import 'package:sync_notes/ui/note_edit_page.dart';
 import 'package:sync_notes/ui/notes_list_page.dart';
 
@@ -249,6 +251,10 @@ void main() {
         child: MaterialApp(
           debugShowCheckedModeBanner: false,
           theme: _theme,
+          // 截图上要显示中文界面，测试环境的默认语言是英文。
+          locale: const Locale('zh'),
+          localizationsDelegates: appLocalizationsDelegates,
+          supportedLocales: appSupportedLocales,
           home: const NotesListPage(),
         ),
       ),
@@ -273,6 +279,9 @@ void main() {
         child: MaterialApp(
           debugShowCheckedModeBanner: false,
           theme: _theme,
+          locale: const Locale('zh'),
+          localizationsDelegates: appLocalizationsDelegates,
+          supportedLocales: appSupportedLocales,
           home: const NoteEditPage(noteId: '1'),
         ),
       ),
@@ -306,6 +315,9 @@ void main() {
         child: MaterialApp(
           debugShowCheckedModeBanner: false,
           theme: _theme,
+          locale: const Locale('zh'),
+          localizationsDelegates: appLocalizationsDelegates,
+          supportedLocales: appSupportedLocales,
           home: const NoteEditPage(noteId: '1'),
         ),
       ),
@@ -314,6 +326,54 @@ void main() {
     await expectLater(
       find.byType(NoteEditPage),
       matchesGoldenFile('goldens/note_with_image.png'),
+    );
+  });
+
+  testWidgets('富文本笔记', (tester) async {
+    // 直接把带样式的文档塞进正文，截图里就能看出六种格式的实际效果。
+    final body = jsonEncode([
+      {
+        'insert': '周五的采购清单\n',
+        'attributes': {'bold': true, 'size': 'huge'},
+      },
+      {'insert': '牛奶、鸡蛋、面包\n'},
+      {
+        'insert': '顺便带一袋咖啡豆',
+        'attributes': {'background': '#fffff176'},
+      },
+      {
+        'insert': '（上次又忘了）',
+        'attributes': {'color': '#ffd32f2f'},
+      },
+      {'insert': '\n'},
+      {
+        'insert': '过期新闻不要买',
+        'attributes': {'italic': true, 'underline': true},
+      },
+      {'insert': '，看保质期。\n'},
+    ]);
+    final services = _services(
+      notes: [_note('1', body, ago: const Duration(minutes: 12))],
+    );
+
+    await _pump(
+      tester,
+      AppScope(
+        services: services,
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: _theme,
+          locale: const Locale('zh'),
+          localizationsDelegates: appLocalizationsDelegates,
+          supportedLocales: appSupportedLocales,
+          home: const NoteEditPage(noteId: '1'),
+        ),
+      ),
+    );
+
+    await expectLater(
+      find.byType(NoteEditPage),
+      matchesGoldenFile('goldens/note_rich_text.png'),
     );
   });
 }
