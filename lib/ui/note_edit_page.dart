@@ -47,8 +47,34 @@ class _NoteEditPageState extends State<NoteEditPage> {
   static const double _sizeLarge = 22;
   static const double _sizeHuge = 32;
 
+  /// 正文四周的留白。放在外面这层滚动视图上，编辑器自己不再管边距。
+  static const EdgeInsets _editorPadding = EdgeInsets.fromLTRB(16, 12, 16, 16);
+
+  /// 光标离上下边缘多近就要滚一次。
+  static const double _caretMargin = 28;
+
+  /// 拖选时边缘自动滚动：感应带宽度、每帧最多滚多远。
+  static const double _edgeBand = 36;
+  static const double _edgeStep = 16;
+
   final FocusNode _focus = FocusNode();
+
+  /// 正文外面那层滚动视图的控制器。滚动由页面自己管，理由见 [_editorScroll]。
   final ScrollController _scroll = ScrollController();
+
+  /// 交给 Quill 的控制器，故意不挂到任何滚动视图上。
+  ///
+  /// 编辑器自己那套「把光标滚进可视区」在长文档里是坏的：它每次选区变化都重算一遍
+  /// 目标偏移，算式里又把当前偏移当成了内容坐标的一部分，于是偏移越大目标越远，
+  /// 拖选的时候滚动条会来回抽。给它一个没有客户端的控制器，它内部所有滚动调用都会
+  /// 自己跳过，滚动只由这一页驱动。
+  final ScrollController _editorScroll = ScrollController();
+
+  /// 用来问编辑器「光标现在在哪」，跟着滚动的时候要用。
+  final GlobalKey<EditorState> _editorKey = GlobalKey<EditorState>();
+
+  /// 可见区域（滚动视图本身），拖到它外面就自动滚。
+  final GlobalKey _viewportKey = GlobalKey();
 
   QuillController? _controller;
   StreamSubscription<DocChange>? _changes;
@@ -56,10 +82,20 @@ class _NoteEditPageState extends State<NoteEditPage> {
   LocalNote? _note;
   Timer? _debounce;
   Timer? _imageRetry;
+  Timer? _edgeScroll;
   StreamSubscription<DroppedContent>? _dropSubscription;
 
   bool _loaded = false;
   bool _needsUnlock = false;
+
+  /// 指针是不是按着。按着的时候把滚动让给边缘自动滚动，两边一起动就会打架。
+  bool _pointerDown = false;
+  Offset? _pointerPosition;
+
+  /// 已排队的「把光标滚出来」，一帧只做一次。
+  bool _revealScheduled = false;
+
+  double _keyboardInset = 0;
 
   /// 最近一次看到的正文。用来判断文档是不是真的变了（动光标不算）。
   String _lastBody = '';
@@ -91,11 +127,14 @@ class _NoteEditPageState extends State<NoteEditPage> {
   void dispose() {
     _debounce?.cancel();
     _imageRetry?.cancel();
+    _edgeScroll?.cancel();
     unawaited(_dropSubscription?.cancel());
     unawaited(_changes?.cancel());
+    _controller?.removeListener(_onControllerChanged);
     _controller?.dispose();
     _focus.dispose();
     _scroll.dispose();
+    _editorScroll.dispose();
     super.dispose();
   }
 
@@ -125,6 +164,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
     );
     _controller = controller;
     _changes = controller.document.changes.listen((_) => _onChanged());
+    controller.addListener(_onControllerChanged);
     _lastBody = note.body;
     _lastSavedBody = note.body;
 
@@ -191,6 +231,147 @@ class _NoteEditPageState extends State<NoteEditPage> {
       await services.local.softDelete(id: note.id, now: DateTime.now());
     }
     unawaited(services.sync.sync());
+  }
+
+  // ---------------------------------------------------------------------
+  // 滚动
+  // ---------------------------------------------------------------------
+
+  void _onControllerChanged() {
+    // 拖选过程中不抢：那会儿滚动由边缘自动滚动负责。
+    if (_pointerDown) return;
+    _scheduleReveal();
+  }
+
+  void _scheduleReveal() {
+    if (_revealScheduled) return;
+    _revealScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _revealScheduled = false;
+      if (mounted) _revealCaret();
+    });
+  }
+
+  /// 光标跑出可视区时才滚一次。
+  void _revealCaret() {
+    final editor = _editorKey.currentState;
+    final selection = _controller?.selection;
+    if (editor == null || selection == null || !selection.isValid) return;
+    if (!_scroll.hasClients) return;
+
+    final Rect caret;
+    try {
+      caret = editor.renderEditor.getLocalRectForCaret(selection.extent);
+    } catch (_) {
+      // 内容刚改完、还没排好版，下一帧会再来一次。
+      return;
+    }
+
+    final position = _scroll.position;
+    final top = _editorPadding.top + caret.top;
+    final bottom = _editorPadding.top + caret.bottom;
+    final visibleBottom = position.pixels + position.viewportDimension;
+
+    if (bottom + _caretMargin > visibleBottom) {
+      _scrollTo(bottom + _caretMargin - position.viewportDimension);
+    } else if (top - _caretMargin < position.pixels) {
+      _scrollTo(top - _caretMargin);
+    }
+  }
+
+  void _scrollTo(double target) {
+    final position = _scroll.position;
+    final clamped = target
+        .clamp(position.minScrollExtent, position.maxScrollExtent)
+        .toDouble();
+    if ((clamped - position.pixels).abs() < 1) return;
+    position.animateTo(
+      clamped,
+      duration: const Duration(milliseconds: 140),
+      curve: Curves.easeOut,
+    );
+  }
+
+  void _handlePointerDown(PointerDownEvent event) {
+    _pointerDown = true;
+    _pointerPosition = event.position;
+  }
+
+  void _handlePointerMove(PointerMoveEvent event) {
+    if (!_pointerDown) return;
+    _pointerPosition = event.position;
+    _updateEdgeScroll();
+  }
+
+  void _handlePointerEnd() {
+    _pointerDown = false;
+    _pointerPosition = null;
+    _edgeScroll?.cancel();
+    _edgeScroll = null;
+    _scheduleReveal();
+  }
+
+  /// 拖着选到可视区边缘以外时自动滚动，和别的编辑器一致。
+  void _updateEdgeScroll() {
+    if (_edgeStepFor(_pointerPosition) == 0) {
+      _edgeScroll?.cancel();
+      _edgeScroll = null;
+      return;
+    }
+    _edgeScroll ??= Timer.periodic(
+      const Duration(milliseconds: 16),
+      (_) => _edgeScrollTick(),
+    );
+  }
+
+  /// 指针离边缘多远决定滚多快，正数往下、负数往上。
+  double _edgeStepFor(Offset? pointer) {
+    if (pointer == null || !_scroll.hasClients) return 0;
+    final box = _viewportKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) return 0;
+
+    final viewport = box.localToGlobal(Offset.zero) & box.size;
+    if (pointer.dy > viewport.bottom - _edgeBand) {
+      final strength =
+          ((pointer.dy - (viewport.bottom - _edgeBand)) / _edgeBand).clamp(
+            0.0,
+            1.0,
+          );
+      return strength * _edgeStep;
+    }
+    if (pointer.dy < viewport.top + _edgeBand) {
+      final strength = (((viewport.top + _edgeBand) - pointer.dy) / _edgeBand)
+          .clamp(0.0, 1.0);
+      return -strength * _edgeStep;
+    }
+    return 0;
+  }
+
+  void _edgeScrollTick() {
+    if (!_scroll.hasClients) return;
+    final position = _scroll.position;
+    final step = _edgeStepFor(_pointerPosition);
+    if (step == 0) return;
+
+    final next = (position.pixels + step)
+        .clamp(position.minScrollExtent, position.maxScrollExtent)
+        .toDouble();
+    if (next == position.pixels) return;
+    position.jumpTo(next);
+
+    // 画面滚了，选中范围也得跟着指针走，不然只是内容在动。
+    final pointer = _pointerPosition;
+    final editor = _editorKey.currentState;
+    if (pointer == null || editor == null) return;
+    try {
+      editor.renderEditor.extendSelection(
+        pointer,
+        cause: SelectionChangedCause.drag,
+      );
+    } catch (_) {
+      // 手势还没被编辑器认成「拖选」时它内部没有起点，跳过就好，
+      // 下一个指针移动事件会补上。
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -847,37 +1028,71 @@ class _NoteEditPageState extends State<NoteEditPage> {
       return const Center(child: CircularProgressIndicator());
     }
 
+    // 键盘弹起或收起之后把光标重新露出来一次：可视区矮了一截，
+    // 之前露在外面的光标可能被挡住了。
+    final keyboardInset = MediaQuery.viewInsetsOf(context).bottom;
+    if (keyboardInset != _keyboardInset) {
+      _keyboardInset = keyboardInset;
+      _scheduleReveal();
+    }
+
     return SafeArea(
       child: Column(
         children: [
           _buildToolbar(controller),
           const Divider(height: 1),
           Expanded(
-            child: QuillEditor.basic(
-              controller: controller,
-              focusNode: _focus,
-              scrollController: _scroll,
-              config: QuillEditorConfig(
-                autoFocus: true,
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-                placeholder: '写点什么…',
-                embedBuilders: [
-                  NoteImageEmbedBuilder(infoOf: _imageInfoOf),
-                  NoteInkEmbedBuilder(
-                    infoOf: _inkInfoOf,
-                    onTap: (id) => unawaited(_openInkCanvas(id)),
-                  ),
-                ],
-                contextMenuBuilder: _buildContextMenu,
-                // 只接管字号属性的渲染，不动 DefaultStyles。
-                //
-                // 自己拼一个 DefaultStyles 会把主题带过来的文字颜色丢掉，
-                // 结果是正文全白、在白底上完全看不见（踩过）。
-                // 这个扩展点在默认样式之后再合并，正好用来覆盖字号。
-                customStyleBuilder: (attribute) =>
-                    attribute.key == Attribute.size.key
-                    ? TextStyle(fontSize: _fontSizeFor(attribute.value))
-                    : const TextStyle(),
+            child: Listener(
+              onPointerDown: _handlePointerDown,
+              onPointerMove: _handlePointerMove,
+              onPointerUp: (_) => _handlePointerEnd(),
+              onPointerCancel: (_) => _handlePointerEnd(),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  // 正文至少铺满一屏，点空白处也能落光标；太长的正文按实际高度走，
+                  // 滚动交给外面这层滚动视图。
+                  final minHeight = constraints.maxHeight.isFinite
+                      ? (constraints.maxHeight - _editorPadding.vertical).clamp(
+                          0.0,
+                          double.infinity,
+                        )
+                      : null;
+                  return SingleChildScrollView(
+                    key: _viewportKey,
+                    controller: _scroll,
+                    padding: _editorPadding,
+                    child: QuillEditor.basic(
+                      controller: controller,
+                      focusNode: _focus,
+                      scrollController: _editorScroll,
+                      config: QuillEditorConfig(
+                        // 自己滚：编辑器内部那个滚动容器关掉。
+                        scrollable: false,
+                        minHeight: minHeight,
+                        autoFocus: true,
+                        placeholder: '写点什么…',
+                        editorKey: _editorKey,
+                        embedBuilders: [
+                          NoteImageEmbedBuilder(infoOf: _imageInfoOf),
+                          NoteInkEmbedBuilder(
+                            infoOf: _inkInfoOf,
+                            onTap: (id) => unawaited(_openInkCanvas(id)),
+                          ),
+                        ],
+                        contextMenuBuilder: _buildContextMenu,
+                        // 只接管字号属性的渲染，不动 DefaultStyles。
+                        //
+                        // 自己拼一个 DefaultStyles 会把主题带过来的文字颜色丢掉，
+                        // 结果是正文全白、在白底上完全看不见（踩过）。
+                        // 这个扩展点在默认样式之后再合并，正好用来覆盖字号。
+                        customStyleBuilder: (attribute) =>
+                            attribute.key == Attribute.size.key
+                            ? TextStyle(fontSize: _fontSizeFor(attribute.value))
+                            : const TextStyle(),
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
           ),
@@ -895,6 +1110,19 @@ class _NoteEditPageState extends State<NoteEditPage> {
     return QuillSimpleToolbar(
       controller: controller,
       config: const QuillSimpleToolbarConfig(
+        // 按钮收紧一点：一排要塞下字号加六种样式，默认尺寸在窄屏手机上会顶到边框。
+        iconTheme: QuillIconTheme(
+          iconButtonUnselectedData: IconButtonData(
+            iconSize: 20,
+            padding: EdgeInsets.all(4),
+            visualDensity: VisualDensity.compact,
+          ),
+          iconButtonSelectedData: IconButtonData(
+            iconSize: 20,
+            padding: EdgeInsets.all(4),
+            visualDensity: VisualDensity.compact,
+          ),
+        ),
         showFontFamily: false,
         showFontSize: true,
         showBoldButton: true,
@@ -902,9 +1130,8 @@ class _NoteEditPageState extends State<NoteEditPage> {
         showUnderLineButton: true,
         showColorButton: true,
         showBackgroundColorButton: true,
-        // 没有放「清除格式」：多一个按钮工具栏就挤到边框上了，
-        // 选中后重新点一次同样的按钮就能取消该样式。
-        showClearFormat: false,
+        // 选中一段花里胡哨的文字点它，就退回纯文本的样子。
+        showClearFormat: true,
         showUndo: false,
         showRedo: false,
         showSearchButton: false,

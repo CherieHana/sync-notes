@@ -23,11 +23,15 @@ class RichBody {
 
   /// 在正文里插一个块级内嵌（图片、手写），并保证它独占一行。
   ///
-  /// 返回插入之后光标该待的位置——块后面那个位置，接着就能打字。
+  /// 返回插入之后光标该待的位置：块**下面那一行**的行首。
   ///
   /// 为什么要自己补前后换行：Quill 只会给视频补，图片和自定义内嵌会贴着
   /// 光标所在的那一行插进去，和文字挤在一起。独占一行之后它才是块级内嵌，
   /// 也才能按我们想要的大小渲染。
+  ///
+  /// 光标为什么要落到下一行：停在块后面那个位置，接着打的字会和块挤在同一行，
+  /// 整行变成「图片 + 文字」，显示出来反而是文字排在图片上面。留一行空的给
+  /// 光标，打出来的字就待在图片下方。
   static int insertBlockEmbed(Document document, int index, Embeddable embed) {
     final text = document.toPlainText();
     final at = index.clamp(0, text.length);
@@ -41,7 +45,16 @@ class RichBody {
     document.insert(block, embed);
     if (padAfter.isNotEmpty) document.insert(block + 1, padAfter);
 
-    return block + 1;
+    final below = block + 2;
+    if (below > document.length - 1) {
+      // 块已经在文末，末尾那个换行前面再补一行空的，光标才有地方待。
+      document.insert(document.length - 1, '\n');
+    } else if (document.toPlainText()[below] != '\n') {
+      // 下面那行本来有字，插一个空行，免得打出来的字跟它挤在一起。
+      document.insert(below, '\n');
+    }
+
+    return below.clamp(0, document.length - 1);
   }
 
   /// 老格式的纯文本 → 富文本文档结构。

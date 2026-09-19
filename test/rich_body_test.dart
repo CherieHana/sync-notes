@@ -77,7 +77,7 @@ void main() {
   });
 
   group('插入内嵌块', () {
-    test('块独占一行，前后的文字分列两行', () {
+    test('块独占一行，光标落到块下面那一行的行首', () {
       final document = RichBody.documentFrom('第一行\n第二行\n');
       // 光标停在第一行末尾。
       final caret = RichBody.insertBlockEmbed(
@@ -86,20 +86,35 @@ void main() {
         BlockEmbed.image(imageId),
       );
 
-      expect(document.toPlainText(), '第一行\n\uFFFC\n第二行\n');
-      // 光标落在块后面，接着就能打字。
-      expect(document.toPlainText()[caret - 1], '\uFFFC');
+      // 块自己占一行，下面空一行给光标，原来的第二行往后挪。
+      expect(document.toPlainText(), '第一行\n\uFFFC\n\n第二行\n');
       expect(insertTypes(document).whereType<Map>().single['image'], imageId);
+
+      // 接着打的字落在块下面，不会挤到图片那一行上去。
+      document.insert(caret, '图下面');
+      expect(document.toPlainText(), '第一行\n\uFFFC\n图下面\n第二行\n');
     });
 
-    test('块插在行首或文末时不会多出空行', () {
+    test('块插在行首或文末时，光标都有下面一行可站', () {
       final atStart = RichBody.documentFrom('正文');
-      RichBody.insertBlockEmbed(atStart, 0, BlockEmbed.image(imageId));
-      expect(atStart.toPlainText(), '\uFFFC\n正文\n');
+      final startCaret = RichBody.insertBlockEmbed(
+        atStart,
+        0,
+        BlockEmbed.image(imageId),
+      );
+      expect(atStart.toPlainText(), '\uFFFC\n\n正文\n');
+      atStart.insert(startCaret, '开头');
+      expect(atStart.toPlainText(), '\uFFFC\n开头\n正文\n');
 
       final atEnd = RichBody.documentFrom('正文');
-      RichBody.insertBlockEmbed(atEnd, 2, BlockEmbed('ink', inkId));
-      expect(atEnd.toPlainText(), '正文\n\uFFFC\n');
+      final endCaret = RichBody.insertBlockEmbed(
+        atEnd,
+        2,
+        BlockEmbed('ink', inkId),
+      );
+      expect(atEnd.toPlainText(), '正文\n\uFFFC\n\n');
+      atEnd.insert(endCaret, '结尾');
+      expect(atEnd.toPlainText(), '正文\n\uFFFC\n结尾\n');
     });
   });
 

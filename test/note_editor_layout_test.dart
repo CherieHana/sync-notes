@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_quill/flutter_quill.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -99,8 +100,8 @@ void main() {
     expect(image.height, closeTo(200, 0.5));
     expect(
       image.left,
-      closeTo(editor.left + 16, 1),
-      reason: '图片应该左对齐，实际左边距 ${image.left - editor.left}',
+      closeTo(editor.left, 1),
+      reason: '图片应该贴着正文左边，实际偏了 ${image.left - editor.left}',
     );
     expect(image.right, lessThan(editor.right - 100));
   });
@@ -196,6 +197,120 @@ void main() {
     await tester.tap(canvas);
     await tester.pumpAndSettle();
     expect(find.byType(InkCanvasPage), findsOneWidget);
+  });
+
+  testWidgets('插图之后接着打的字排在图片下面', (tester) async {
+    await pumpEditor(tester, '第一行');
+    final editor = tester.widget<QuillEditor>(find.byType(QuillEditor));
+    final controller = editor.controller;
+
+    // 走和「插入图片」菜单一样的路子：插块，光标停到返回的位置，然后接着打字。
+    final caret = RichBody.insertBlockEmbed(
+      controller.document,
+      controller.document.length - 1,
+      BlockEmbed.image(imageId),
+    );
+    controller.updateSelection(
+      TextSelection.collapsed(offset: caret),
+      ChangeSource.local,
+    );
+    const typed = '图片下面的字';
+    controller.document.insert(caret, typed);
+    controller.updateSelection(
+      TextSelection.collapsed(offset: caret + typed.length),
+      ChangeSource.local,
+    );
+    await tester.pumpAndSettle();
+
+    final image = tester.getRect(find.byType(Image));
+    final text = tester.getRect(find.text(typed, findRichText: true));
+    expect(
+      text.top,
+      greaterThanOrEqualTo(image.bottom - 0.5),
+      reason: '打出来的字跑到图片上面去了',
+    );
+  });
+
+  testWidgets('光标跑到看不见的地方，视图会跟着滚过去', (tester) async {
+    final long = List.generate(80, (i) => '第 $i 行，把正文撑得比一屏长').join('\n');
+    await pumpEditor(tester, long);
+
+    final state = tester.state<ScrollableState>(
+      find
+          .descendant(
+            of: find.byType(SingleChildScrollView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    expect(state.position.pixels, 0);
+
+    final controller = tester
+        .widget<QuillEditor>(find.byType(QuillEditor))
+        .controller;
+    final end = controller.document.length - 1;
+    controller.document.insert(end, '在文末新写的一行');
+    controller.updateSelection(
+      TextSelection.collapsed(offset: end + 4),
+      ChangeSource.local,
+    );
+    await tester.pumpAndSettle();
+
+    expect(state.position.pixels, greaterThan(0), reason: '光标在文末，视图应该跟着往下滚');
+  });
+
+  testWidgets('点正文下面的空白处，光标照样落在文末', (tester) async {
+    await pumpEditor(tester, '第一行');
+    final controller = tester
+        .widget<QuillEditor>(find.byType(QuillEditor))
+        .controller;
+    final viewport = tester.getRect(find.byType(SingleChildScrollView));
+
+    // 正文只有一行，编辑器自己要铺满一屏，下面那片空白点下去也应该落光标。
+    await tester.tapAt(Offset(viewport.center.dx, viewport.bottom - 40));
+    await tester.pumpAndSettle();
+
+    expect(
+      controller.selection.baseOffset,
+      controller.document.length - 1,
+      reason: '点空白处没把光标放到文末',
+    );
+  });
+
+  testWidgets('拖着选到窗口下边缘，正文会自动往下滚', (tester) async {
+    final long = List.generate(80, (i) => '第 $i 行，把正文撑得比一屏长').join('\n');
+    await pumpEditor(tester, long);
+
+    final state = tester.state<ScrollableState>(
+      find
+          .descendant(
+            of: find.byType(SingleChildScrollView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+
+    final editor = tester.getRect(find.byType(QuillEditor));
+    final gesture = await tester.startGesture(
+      Offset(editor.center.dx, editor.top + 30),
+      kind: PointerDeviceKind.mouse,
+    );
+    await tester.pump();
+    // 拖到可见区域外面，手指/鼠标停在那儿不动，正文应该自己往下走。
+    await gesture.moveTo(Offset(editor.center.dx, editor.bottom + 40));
+    for (var i = 0; i < 25; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    final scrolled = state.position.pixels;
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(scrolled, greaterThan(50), reason: '拖着选到边缘没有自动滚动，实测滚了 $scrolled');
+
+    // 松手之后不能再自己滚。
+    final afterRelease = state.position.pixels;
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(state.position.pixels, afterRelease);
   });
 
   testWidgets('打开老笔记会顺手把正文升级成富文本存回去', (tester) async {
