@@ -118,15 +118,9 @@ class _NoteEditPageState extends State<NoteEditPage> {
   /// 这一次手势里选区有没有变过。变了才是拖选，滚页面不算。
   bool _selectionMovedWhileDown = false;
 
-  /// 按下的时候输入法是不是本来就开着。
-  bool _keyboardWasUp = false;
-
   /// 上一次轻点的时间和位置，用来自己认双击。
   DateTime? _lastTapAt;
   Offset? _lastTapPosition;
-
-  /// 最近一次主动叫出输入法的时刻，用来防止刚叫出来又被自己摁回去。
-  DateTime? _keyboardShownAt;
 
   /// 已排队的「把光标滚出来」，一帧只做一次。
   bool _revealScheduled = false;
@@ -280,7 +274,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
 
   void _onControllerChanged() {
     // 选字的过程中别让输入法冒出来（拖选、拖抓手、长按选词都会走到这里）。
-    if (_lazyKeyboard) _keepKeyboardHiddenWhileSelecting();
+    if (_lazyKeyboard) _suppressKeyboardWhileSelecting();
 
     // 拖选过程中不抢：那会儿滚动由边缘自动滚动负责。
     if (_pointerDown) {
@@ -293,22 +287,18 @@ class _NoteEditPageState extends State<NoteEditPage> {
     _scheduleReveal();
   }
 
-  /// 手机上只要正在选字（选区不是一根光标），就把输入法摁回去。
+  /// 手机上选字的时候，别让编辑器去要输入法。
   ///
-  /// Quill 每次选区变化都可能会去要一次输入法，拖选和拖抓手的时候尤其明显，
-  /// 键盘会一次次往上顶。这里在每次选区变化后收一次；本来没弹就什么都不做，
-  /// 不会反复调通道。刚主动叫出键盘的那半秒内不动手，免得跟双击打架。
-  void _keepKeyboardHiddenWhileSelecting() {
-    final shown = _keyboardShownAt;
-    if (shown != null &&
-        DateTime.now().difference(shown) < const Duration(milliseconds: 600)) {
-      return;
-    }
-
-    final selection = _controller?.selection;
-    if (selection == null || selection.isCollapsed) return;
-    if (_keyboardInset <= 0) return;
-    _setSoftKeyboardVisible(false);
+  /// Quill 每次选区变化都会要一次键盘（它源码里的注释写得很明白：所有选区变化
+  /// 都会弹键盘，不只是用户手势触发的），拖选和拖抓手的时候键盘就一次次往上顶。
+  /// 用通道把它关掉会和它打架——关一次又弹一次，变成「弹出来又收回去」的鬼畜。
+  /// 所以改成把这次请求吞掉：编辑器自带的 skipRequestKeyboard 就是干这个的，
+  /// 调用后紧接着产生的那个请求会直接返回，一个通道调用都不发。
+  void _suppressKeyboardWhileSelecting() {
+    final controller = _controller;
+    if (controller == null) return;
+    if (controller.selection.isCollapsed) return;
+    controller.skipRequestKeyboard = true;
   }
 
   void _scheduleReveal() {
@@ -378,7 +368,6 @@ class _NoteEditPageState extends State<NoteEditPage> {
     _pointerTravel = 0;
     _pointerDownAt = DateTime.now();
     _selectionMovedWhileDown = false;
-    _keyboardWasUp = _keyboardInset > 0;
   }
 
   void _handlePointerMove(PointerMoveEvent event) {
@@ -418,18 +407,13 @@ class _NoteEditPageState extends State<NoteEditPage> {
   ) {
     if (wasTap && pointer != null && _isDoubleTap(pointer)) {
       _focus.requestFocus();
-      _setSoftKeyboardVisible(true);
+      _showSoftKeyboard();
       return;
     }
-    // 键盘本来就开着（用户正在打字），别去关它。
-    if (_keyboardWasUp) return;
-
     // 拖选也是一次正经的选字操作：焦点要给编辑器（光标和抓手都靠它显示），
-    // 只是不叫键盘。
+    // 但不去叫键盘——编辑器想弹的那个请求已经被 [_suppressKeyboardWhileSelecting]
+    // 吞掉了，这里再动手关一次反而会变成「弹出来又收回去」。
     if (wasTap || selectedSomething) _focus.requestFocus();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _setSoftKeyboardVisible(false);
-    });
   }
 
   /// 两次轻点挨得很近就算双击；第二次用过就清零，免得连点成两次双击。
@@ -453,16 +437,14 @@ class _NoteEditPageState extends State<NoteEditPage> {
     return doubled;
   }
 
-  /// 收起或唤出系统输入法。
+  /// 唤出系统输入法（双击才用）。
   ///
   /// Flutter 只在 TextInputConnection 上暴露 show/hide，而那条连接在编辑器内部，
-  /// 外面拿不到。这两个方法名是 TextInput 通道协议的一部分，引擎自己就按它处理，
-  /// 所以这里直接用——不这么做就没法做到「光标留着、键盘收回去」。
-  void _setSoftKeyboardVisible(bool visible) {
-    if (visible) _keyboardShownAt = DateTime.now();
-    SystemChannels.textInput.invokeMethod<void>(
-      visible ? 'TextInput.show' : 'TextInput.hide',
-    );
+  /// 外面拿不到。这个方法名是 TextInput 通道协议的一部分，引擎自己就按它处理。
+  /// 收起键盘不用这里——那会和编辑器自己的请求打架，改成吞掉它的请求
+  /// （见 [_suppressKeyboardWhileSelecting]）。
+  void _showSoftKeyboard() {
+    SystemChannels.textInput.invokeMethod<void>('TextInput.show');
   }
 
   /// 「选择」：把选区重新点亮一次。
@@ -482,15 +464,20 @@ class _NoteEditPageState extends State<NoteEditPage> {
         TextPosition(offset: selection.extentOffset),
       );
     }
+    final target = selection;
 
     _focus.requestFocus();
-    controller.updateSelection(selection, ChangeSource.local);
-
-    // 焦点是异步生效的，抓手要等编辑器真的有焦点才建得出来，所以等下一帧。
+    // 先收成一根光标：编辑器会把选区叠加层整个销毁，抓手就挂在那上头。
+    // 下一帧再把这段字选回来，叠加层会连着两个抓手一起重建——
+    // 已经是「有选区但叠加层里没有抓手」的状态时，只有重建这条路能救回来。
+    controller.updateSelection(
+      TextSelection.collapsed(offset: target.start),
+      ChangeSource.local,
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      controller.updateSelection(target, ChangeSource.local);
       _editorKey.currentState?.showToolbar();
-      _setSoftKeyboardVisible(false);
       _scheduleReveal();
     });
   }
@@ -498,15 +485,10 @@ class _NoteEditPageState extends State<NoteEditPage> {
   /// 点完菜单里的按钮之后，把编辑器的状态收回来。
   ///
   /// 这条浮动菜单不在编辑器的点击区域内，点它会被当成「点到外面」：编辑器丢掉
-  /// 焦点，两端的抓手跟着消失，键盘还会被重新叫出来。这里统一补一遍——焦点还
-  /// 回去，本来没在打字就保持键盘不弹（剪切/复制/粘贴/全选都一样）。
+  /// 焦点，两端的抓手跟着消失。这里把焦点要回来（抓手靠它显示），键盘不去碰——
+  /// 要弹的那个请求会在 [_suppressKeyboardWhileSelecting] 那里被吞掉。
   void _afterMenuAction() {
-    final wasTyping = _keyboardInset > 0;
     _focus.requestFocus();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      if (!wasTyping) _setSoftKeyboardVisible(false);
-    });
   }
 
   /// 手机上按下的这一下先别让编辑器去要输入法，等抬起时看是不是双击。
@@ -679,6 +661,9 @@ class _NoteEditPageState extends State<NoteEditPage> {
     if (_services == null) return;
 
     try {
+      // 选图会把窗口让给系统相册/相机，回来的时候别让编辑器自动拿回焦点，
+      // 否则输入法会跟着一起弹出来。
+      _focus.unfocus();
       final picked = await ImagePipeline.pickMany(fromCamera: fromCamera);
       if (picked.isEmpty || !mounted) return;
       // 按选中的顺序一张一张插：每张自己占一行，插完光标落到它下面，
@@ -749,6 +734,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
     final services = _services;
     if (services == null) return;
 
+    _focus.unfocus();
     final strokes = await Navigator.of(context).push<List<InkStroke>>(
       MaterialPageRoute(
         builder: (_) => const InkCanvasPage(initialStrokes: []),
@@ -789,6 +775,8 @@ class _NoteEditPageState extends State<NoteEditPage> {
       return;
     }
 
+    // 从整页画布回来时不让编辑器自动拿回焦点，省得输入法跟着弹出来。
+    _focus.unfocus();
     final strokes = await Navigator.of(context).push<List<InkStroke>>(
       MaterialPageRoute(
         builder: (_) =>
@@ -818,6 +806,8 @@ class _NoteEditPageState extends State<NoteEditPage> {
       _toast('这张图还没同步下来，稍等一下再点');
       return;
     }
+    // 看大图的时候编辑器先松手：回来不会自动拿回焦点，输入法也就不会弹。
+    _focus.unfocus();
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => ImagePreviewPage(path: path, title: p.basename(path)),

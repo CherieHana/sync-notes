@@ -521,7 +521,14 @@ void main() {
       isEmpty,
       reason: '轻点一下就唤起输入法了',
     );
-    expect(calls, contains('TextInput.hide'));
+    // 也不能靠「弹了再收」装样子：一次开关都不该有。
+    expect(
+      calls.where(
+        (call) => call == 'TextInput.show' || call == 'TextInput.hide',
+      ),
+      isEmpty,
+      reason: '轻点不该动输入法',
+    );
 
     // 紧接着再点一下就是双击，这次要弹。
     calls.clear();
@@ -685,7 +692,13 @@ void main() {
     await gesture.up();
     await tester.pumpAndSettle();
 
-    expect(calls, contains('TextInput.hide'), reason: '拖选过程中输入法没被摁住');
+    expect(
+      calls.where(
+        (call) => call == 'TextInput.show' || call == 'TextInput.hide',
+      ),
+      isEmpty,
+      reason: '拖选过程中不该开关输入法，开关打架就是鬼畜的来源',
+    );
   });
 
   testWidgets('点完菜单里的按钮，焦点收回来、键盘也不会又弹出来', (tester) async {
@@ -725,7 +738,11 @@ void main() {
     }
 
     expect(editor.focusNode.hasFocus, isTrue, reason: '点完菜单没把焦点收回来');
-    expect(calls, contains('TextInput.hide'), reason: '点完菜单键盘又冒出来了');
+    expect(
+      calls.where((call) => call == 'TextInput.show'),
+      isEmpty,
+      reason: '点完菜单键盘又冒出来了',
+    );
   });
 
   testWidgets('打开老笔记会顺手把正文升级成富文本存回去', (tester) async {
