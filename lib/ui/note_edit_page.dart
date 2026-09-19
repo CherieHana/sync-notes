@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -368,6 +369,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
     _pointerTravel = 0;
     _pointerDownAt = DateTime.now();
     _selectionMovedWhileDown = false;
+    _dragAnchor = null;
   }
 
   void _handlePointerMove(PointerMoveEvent event) {
@@ -389,6 +391,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
     _pointerPosition = null;
     _edgeScroll?.cancel();
     _edgeScroll = null;
+    _dragAnchor = null;
 
     if (_lazyKeyboard) {
       _handleSoftKeyboardAfterGesture(wasTap, selectedSomething, pointer);
@@ -474,39 +477,39 @@ class _NoteEditPageState extends State<NoteEditPage> {
     _hideSoftKeyboard();
   }
 
-  /// 「选择」：把选区重新点亮一次。
+  /// 长按拖选时「不动的那一端」，记的是文本偏移而不是屏幕坐标。
   ///
-  /// 两端那两个拖动抓手要「编辑器有焦点 + 选区叠加层在」才会画出来。长按偶尔会
-  /// 出现菜单出来了、抓手没跟上的情况，点这个按钮就把两样都补回来：先把焦点要回
-  /// 编辑器，下一帧再让编辑器把工具栏和抓手一起摆一次（它的 showToolbar 会顺手
-  /// 把抓手补上）。本来只有光标时，顺手把光标所在的词选上。
-  void _reselectForHandles() {
+  /// Quill 自己那套是按屏幕坐标重算两端的：它把长按起点存成当时手指的位置，
+  /// 一旦内容滚动，这个坐标指到的字就变了，于是本该固定的一端跟着内容一起跑，
+  /// 选中的范围永远只有那么大。这里改成记「起点是哪个字」，滚多少都不受影响。
+  TextPosition? _dragAnchor;
+
+  /// 按当前指针位置，把选区从 [_dragAnchor] 拉过来。两端都按词边界对齐。
+  void _extendSelectionFrom(Offset globalPosition) {
     final editor = _editorKey.currentState;
     final controller = _controller;
-    if (editor == null || controller == null) return;
+    final anchor = _dragAnchor;
+    if (editor == null || controller == null || anchor == null) return;
 
-    var selection = controller.selection;
-    if (selection.isCollapsed) {
-      selection = editor.renderEditor.selectWordAtPosition(
-        TextPosition(offset: selection.extentOffset),
-      );
+    final render = editor.renderEditor;
+    final to = render.getPositionForOffset(globalPosition);
+    final anchorWord = render.selectWordAtPosition(anchor);
+    final toWord = render.selectWordAtPosition(to);
+
+    // 往前拖：固定的是起点那个词的开头；往回拖：固定的是它的结尾。
+    final int start;
+    final int end;
+    if (to.offset >= anchor.offset) {
+      start = anchorWord.start;
+      end = math.max(toWord.end, anchorWord.end);
+    } else {
+      start = math.min(toWord.start, anchorWord.start);
+      end = anchorWord.end;
     }
-    final target = selection;
-
-    _focus.requestFocus();
-    // 先收成一根光标：编辑器会把选区叠加层整个销毁，抓手就挂在那上头。
-    // 下一帧再把这段字选回来，叠加层会连着两个抓手一起重建——
-    // 已经是「有选区但叠加层里没有抓手」的状态时，只有重建这条路能救回来。
     controller.updateSelection(
-      TextSelection.collapsed(offset: target.start),
+      TextSelection(baseOffset: start, extentOffset: end),
       ChangeSource.local,
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      controller.updateSelection(target, ChangeSource.local);
-      _editorKey.currentState?.showToolbar();
-      _scheduleReveal();
-    });
   }
 
   /// 点完菜单里的按钮之后，把编辑器的状态收回来。
@@ -589,6 +592,12 @@ class _NoteEditPageState extends State<NoteEditPage> {
     final pointer = _pointerPosition;
     final editor = _editorKey.currentState;
     if (pointer == null || editor == null) return;
+
+    // 长按拖选走我们自己的那套：固定端记的是文本偏移，不会跟着内容跑。
+    if (_dragAnchor != null) {
+      _extendSelectionFrom(pointer);
+      return;
+    }
     try {
       editor.renderEditor.extendSelection(
         pointer,
@@ -1380,6 +1389,20 @@ class _NoteEditPageState extends State<NoteEditPage> {
                         placeholder: '写点什么…',
                         editorKey: _editorKey,
                         onTapDown: _handleTapDown,
+                        onSingleLongTapStart: (details, positionOf) {
+                          // 长按起点记成文本位置，后续拖动都从它拉选区。
+                          _dragAnchor = positionOf(details.globalPosition);
+                          return false; // 起点那个词还是让编辑器自己选
+                        },
+                        onSingleLongTapMoveUpdate: (details, positionOf) {
+                          if (_dragAnchor == null) return false;
+                          _extendSelectionFrom(details.globalPosition);
+                          return true; // 别用编辑器那套按屏幕坐标重算的
+                        },
+                        onSingleLongTapEnd: (details, positionOf) {
+                          _dragAnchor = null;
+                          return false;
+                        },
                         embedBuilders: [
                           NoteImageEmbedBuilder(
                             infoOf: _imageInfoOf,
@@ -1510,18 +1533,6 @@ class _NoteEditPageState extends State<NoteEditPage> {
             },
           ),
       ];
-      // 手机上补一个「选择」：长按偶尔只弹出菜单、不给两端的拖动抓手，
-      // 点它一下就把抓手叫回来。放在最前面，最好按。
-      items.insert(
-        0,
-        ContextMenuButtonItem(
-          label: '选择',
-          onPressed: () {
-            editorState.hideToolbar();
-            _reselectForHandles();
-          },
-        ),
-      );
     }
 
     return AdaptiveTextSelectionToolbar.buttonItems(

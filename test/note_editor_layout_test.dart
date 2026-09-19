@@ -626,31 +626,53 @@ void main() {
     );
   });
 
-  testWidgets('选区菜单里的「选择」把选区重新点亮，抓手才有得拖', (tester) async {
-    await pumpEditor(tester, '第一行文字\n第二行文字', platform: TargetPlatform.android);
+  testWidgets('长按拖选时，固定的一端不会跟着页面滚走', (tester) async {
+    final long = List.generate(80, (i) => '第 $i 行，把正文撑得比一屏长').join('\n');
+    await pumpEditor(tester, long, platform: TargetPlatform.android);
+
+    final state = tester.state<ScrollableState>(
+      find
+          .descendant(
+            of: find.byType(SingleChildScrollView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
     final controller = tester
         .widget<QuillEditor>(find.byType(QuillEditor))
         .controller;
-    final state = tester.state<QuillRawEditorState>(
-      find.byType(QuillRawEditor),
+
+    // 在第一行上长按，选中一个词。
+    final line = tester.getRect(
+      find.text('第 0 行，把正文撑得比一屏长', findRichText: true),
+    );
+    final gesture = await tester.startGesture(
+      line.centerLeft + const Offset(8, 0),
+      kind: PointerDeviceKind.touch,
+    );
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(controller.selection.isCollapsed, isFalse, reason: '长按没选中词');
+    final anchor = controller.selection.start;
+
+    // 一直往下拖到屏幕外，页面开始自己往下滚。
+    for (var i = 0; i < 24; i++) {
+      await gesture.moveBy(const Offset(0, 40));
+      await tester.pump(const Duration(milliseconds: 30));
+    }
+    expect(state.position.pixels, greaterThan(0), reason: '拖着选到边缘应该自动滚');
+    expect(
+      controller.selection.start,
+      anchor,
+      reason: '固定的一端跟着内容滚跑了，选出来的范围就永远一样大',
+    );
+    expect(
+      controller.selection.end,
+      greaterThan(anchor + 30),
+      reason: '拖了这么久，选区应该明显变长',
     );
 
-    controller.updateSelection(
-      const TextSelection(baseOffset: 0, extentOffset: 4),
-      ChangeSource.local,
-    );
-    state.showToolbar();
+    await gesture.up();
     await tester.pumpAndSettle();
-    expect(find.text('选择'), findsOneWidget);
-
-    await tester.tap(find.text('选择'));
-    await tester.pumpAndSettle();
-
-    // 选区还在（没被点成光标），菜单也重新摆出来了。
-    expect(controller.selection.isCollapsed, isFalse);
-    expect(find.byType(AdaptiveTextSelectionToolbar), findsOneWidget);
-    expect(controller.selection.start, 0);
-    expect(controller.selection.end, greaterThanOrEqualTo(4));
   });
 
   testWidgets('拖选的时候输入法被摁住，不会一次次往上顶', (tester) async {
