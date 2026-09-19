@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
@@ -44,6 +45,7 @@ void main() {
     WidgetTester tester,
     String body, {
     bool withImageFile = true,
+    TargetPlatform? platform,
   }) async {
     final local = FakeLocalStore()..device = 'layout-test';
     final at = DateTime.now();
@@ -83,6 +85,7 @@ void main() {
           // 工具栏要 Quill 的本地化代理，缺了会变成一块灰条。
           localizationsDelegates: appLocalizationsDelegates,
           supportedLocales: appSupportedLocales,
+          theme: platform == null ? null : ThemeData(platform: platform),
           home: const NoteEditPage(noteId: 'n1'),
         ),
       ),
@@ -434,6 +437,130 @@ void main() {
     final afterRelease = state.position.pixels;
     await tester.pump(const Duration(milliseconds: 300));
     expect(state.position.pixels, afterRelease);
+  });
+
+  testWidgets('往下滚看内容之后，页面不会自己弹回光标那里', (tester) async {
+    final long = List.generate(80, (i) => '第 $i 行，把正文撑得比一屏长').join('\n');
+    await pumpEditor(tester, long);
+
+    final state = tester.state<ScrollableState>(
+      find
+          .descendant(
+            of: find.byType(SingleChildScrollView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    final controller = tester
+        .widget<QuillEditor>(find.byType(QuillEditor))
+        .controller;
+
+    // 光标放文末，视图跟着滚下去——这是「滚回去」的目标位置。
+    final end = controller.document.length - 1;
+    controller.updateSelection(
+      TextSelection.collapsed(offset: end),
+      ChangeSource.local,
+    );
+    await tester.pumpAndSettle();
+    final caretOffset = state.position.pixels;
+    expect(caretOffset, greaterThan(100));
+
+    // 手指往下推，回头去看前面的内容（视图离底部越远，越能看出有没有弹回去）。
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byType(SingleChildScrollView)),
+      kind: PointerDeviceKind.touch,
+    );
+    await tester.pump(const Duration(milliseconds: 16));
+    // 分几步慢慢推：末速度接近零，松手后就该停在原地。
+    for (var i = 0; i < 8; i++) {
+      await gesture.moveBy(const Offset(0, 30));
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    final beforeRelease = state.position.pixels;
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(
+      state.position.pixels,
+      closeTo(beforeRelease, 2),
+      reason: '松手之后页面又弹回光标那里了',
+    );
+    expect(beforeRelease, lessThan(caretOffset - 100), reason: '这一下没滚动起来');
+  });
+
+  testWidgets('安卓上轻点不弹输入法，双击才弹', (tester) async {
+    final calls = <String>[];
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.textInput,
+      (call) async {
+        calls.add(call.method);
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.textInput,
+        null,
+      ),
+    );
+
+    await pumpEditor(tester, '第一行\n第二行', platform: TargetPlatform.android);
+    calls.clear();
+
+    await tester.tap(find.byType(QuillEditor));
+    await tester.pumpAndSettle();
+    expect(
+      calls.where((call) => call == 'TextInput.show'),
+      isEmpty,
+      reason: '轻点一下就唤起输入法了',
+    );
+    expect(calls, contains('TextInput.hide'));
+
+    // 紧接着再点一下就是双击，这次要弹。
+    calls.clear();
+    await tester.tap(find.byType(QuillEditor));
+    await tester.pump(const Duration(milliseconds: 80));
+    await tester.tap(find.byType(QuillEditor));
+    await tester.pumpAndSettle();
+    // flutter_quill 双击之后还会排一个「显示选区菜单」的回调。留着不跑，
+    // 它会落在测试结束、树已经拆掉之后，然后崩在一个空引用上。
+    for (var i = 0; i < 4; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(calls, contains('TextInput.show'), reason: '双击没唤起输入法');
+  });
+
+  testWidgets('安卓上选区菜单不会盖住格式栏', (tester) async {
+    await pumpEditor(tester, '第一行\n第二行', platform: TargetPlatform.android);
+    final controller = tester
+        .widget<QuillEditor>(find.byType(QuillEditor))
+        .controller;
+
+    controller.updateSelection(
+      const TextSelection(baseOffset: 0, extentOffset: 3),
+      ChangeSource.local,
+    );
+    tester
+        .state<QuillRawEditorState>(find.byType(QuillRawEditor))
+        .showToolbar();
+    await tester.pumpAndSettle();
+
+    final toolbar = tester.getRect(find.byType(QuillSimpleToolbar));
+    // 量菜单里的按钮，不量 AdaptiveTextSelectionToolbar 本身：
+    // 那一层铺满整屏，量它的框量不出可见位置。
+    final menu = tester.getRect(
+      find
+          .descendant(
+            of: find.byType(AdaptiveTextSelectionToolbar),
+            matching: find.byType(Material),
+          )
+          .first,
+    );
+    expect(
+      menu.top,
+      greaterThanOrEqualTo(toolbar.bottom),
+      reason: '浮动菜单盖在格式栏上了',
+    );
   });
 
   testWidgets('打开老笔记会顺手把正文升级成富文本存回去', (tester) async {

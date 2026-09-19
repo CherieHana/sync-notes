@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart';
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
@@ -58,6 +59,9 @@ class _NoteEditPageState extends State<NoteEditPage> {
   static const double _edgeBand = 36;
   static const double _edgeStep = 16;
 
+  /// 两次轻点在这个时间内算一次双击。
+  static const Duration _tapTimeout = Duration(milliseconds: 320);
+
   final FocusNode _focus = FocusNode();
 
   /// 正文外面那层滚动视图的控制器。滚动由页面自己管，理由见 [_editorScroll]。
@@ -77,6 +81,9 @@ class _NoteEditPageState extends State<NoteEditPage> {
   /// 可见区域（滚动视图本身），拖到它外面就自动滚。
   final GlobalKey _viewportKey = GlobalKey();
 
+  /// 格式栏，量一下它有多高：手机上的选区浮动菜单要往下让出这个高度。
+  final GlobalKey _toolbarKey = GlobalKey();
+
   QuillController? _controller;
   StreamSubscription<DocChange>? _changes;
   AppServices? _services;
@@ -93,10 +100,29 @@ class _NoteEditPageState extends State<NoteEditPage> {
   bool _pointerDown = false;
   Offset? _pointerPosition;
 
+  /// 这一次手势从按下到现在挪了多远、按了多久。用来区分「轻点」「拖选」「滚页面」。
+  double _pointerTravel = 0;
+  DateTime? _pointerDownAt;
+
+  /// 这一次手势里选区有没有变过。变了才是拖选，滚页面不算。
+  bool _selectionMovedWhileDown = false;
+
+  /// 按下的时候输入法是不是本来就开着。
+  bool _keyboardWasUp = false;
+
+  /// 上一次轻点的时间和位置，用来自己认双击。
+  DateTime? _lastTapAt;
+  Offset? _lastTapPosition;
+
   /// 已排队的「把光标滚出来」，一帧只做一次。
   bool _revealScheduled = false;
 
   double _keyboardInset = 0;
+
+  /// 手机上默认不弹输入法：点一下只放光标和选区，双击才叫出键盘。
+  ///
+  /// 安卓上每点一下、每拉一次选区都弹键盘，改样式和选长段都很碍事。
+  bool _lazyKeyboard = false;
 
   /// 最近一次看到的正文。用来判断文档是不是真的变了（动光标不算）。
   String _lastBody = '';
@@ -240,7 +266,13 @@ class _NoteEditPageState extends State<NoteEditPage> {
 
   void _onControllerChanged() {
     // 拖选过程中不抢：那会儿滚动由边缘自动滚动负责。
-    if (_pointerDown) return;
+    if (_pointerDown) {
+      _selectionMovedWhileDown = true;
+      // 选中范围变了，说明真的在拖选。手指/鼠标停在边缘不动的时候也要继续滚，
+      // 所以顺手续上边缘自动滚动，而不是非等下一次指针移动。
+      _updateEdgeScroll();
+      return;
+    }
     _scheduleReveal();
   }
 
@@ -308,20 +340,103 @@ class _NoteEditPageState extends State<NoteEditPage> {
   void _handlePointerDown(PointerDownEvent event) {
     _pointerDown = true;
     _pointerPosition = event.position;
+    _pointerTravel = 0;
+    _pointerDownAt = DateTime.now();
+    _selectionMovedWhileDown = false;
+    _keyboardWasUp = _keyboardInset > 0;
   }
 
   void _handlePointerMove(PointerMoveEvent event) {
     if (!_pointerDown) return;
+    _pointerTravel += event.delta.distance;
     _pointerPosition = event.position;
     _updateEdgeScroll();
   }
 
   void _handlePointerEnd() {
+    final pointer = _pointerPosition;
+    final held = _pointerDownAt == null
+        ? Duration.zero
+        : DateTime.now().difference(_pointerDownAt!);
+    final wasTap = _pointerDown && _pointerTravel < 12 && held < _tapTimeout;
+    final selectedSomething = _selectionMovedWhileDown;
+
     _pointerDown = false;
     _pointerPosition = null;
     _edgeScroll?.cancel();
     _edgeScroll = null;
-    _scheduleReveal();
+
+    if (_lazyKeyboard) {
+      _handleSoftKeyboardAfterGesture(wasTap, selectedSomething, pointer);
+    }
+
+    // 只有拖选才把光标滚回可视区；滚页面时别抢，不然一松手就弹回去。
+    if (selectedSomething) _scheduleReveal();
+    _selectionMovedWhileDown = false;
+  }
+
+  /// 手机上：轻点/拖选只放光标，双击才叫出输入法。
+  void _handleSoftKeyboardAfterGesture(
+    bool wasTap,
+    bool selectedSomething,
+    Offset? pointer,
+  ) {
+    if (wasTap && pointer != null && _isDoubleTap(pointer)) {
+      _focus.requestFocus();
+      _setSoftKeyboardVisible(true);
+      return;
+    }
+    // 键盘本来就开着（用户正在打字），别去关它。
+    if (_keyboardWasUp) return;
+
+    // 拖选也是一次正经的选字操作：焦点要给编辑器（光标和抓手都靠它显示），
+    // 只是不叫键盘。
+    if (wasTap || selectedSomething) _focus.requestFocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _setSoftKeyboardVisible(false);
+    });
+  }
+
+  /// 两次轻点挨得很近就算双击；第二次用过就清零，免得连点成两次双击。
+  bool _isDoubleTap(Offset position) {
+    final now = DateTime.now();
+    final last = _lastTapAt;
+    final lastPosition = _lastTapPosition;
+    final doubled =
+        last != null &&
+        lastPosition != null &&
+        now.difference(last) < _tapTimeout &&
+        (position - lastPosition).distance < 48;
+
+    if (doubled) {
+      _lastTapAt = null;
+      _lastTapPosition = null;
+    } else {
+      _lastTapAt = now;
+      _lastTapPosition = position;
+    }
+    return doubled;
+  }
+
+  /// 收起或唤出系统输入法。
+  ///
+  /// Flutter 只在 TextInputConnection 上暴露 show/hide，而那条连接在编辑器内部，
+  /// 外面拿不到。这两个方法名是 TextInput 通道协议的一部分，引擎自己就按它处理，
+  /// 所以这里直接用——不这么做就没法做到「光标留着、键盘收回去」。
+  void _setSoftKeyboardVisible(bool visible) {
+    SystemChannels.textInput.invokeMethod<void>(
+      visible ? 'TextInput.show' : 'TextInput.hide',
+    );
+  }
+
+  /// 手机上按下的这一下先别让编辑器去要输入法，等抬起时看是不是双击。
+  /// 返回 false 表示照常走编辑器自己的按下处理（放光标、拖选都要用）。
+  bool _handleTapDown(
+    TapDownDetails details,
+    TextPosition Function(Offset offset) positionOf,
+  ) {
+    if (_lazyKeyboard) _controller?.skipRequestKeyboard = true;
+    return false;
   }
 
   /// 拖着选到可视区边缘以外时自动滚动，和别的编辑器一致。
@@ -340,6 +455,9 @@ class _NoteEditPageState extends State<NoteEditPage> {
   /// 指针离边缘多远决定滚多快，正数往下、负数往上。
   double _edgeStepFor(Offset? pointer) {
     if (pointer == null || !_scroll.hasClients) return 0;
+    // 只有拖着选字的时候才自动滚。单纯滚页面（手指划过文字）时插一脚，
+    // 就变成一边自己滚一边跟手指较劲了。
+    if (!_selectionMovedWhileDown) return 0;
     final box = _viewportKey.currentContext?.findRenderObject() as RenderBox?;
     if (box == null || !box.hasSize) return 0;
 
@@ -481,9 +599,17 @@ class _NoteEditPageState extends State<NoteEditPage> {
     if (_services == null) return;
 
     try {
-      final prepared = await ImagePipeline.pick(fromCamera: fromCamera);
-      if (prepared == null || !mounted) return;
-      await _storeImage(prepared);
+      final picked = await ImagePipeline.pickMany(fromCamera: fromCamera);
+      if (picked.isEmpty || !mounted) return;
+      // 按选中的顺序一张一张插：每张自己占一行，插完光标落到它下面，
+      // 所以下一张正好接在后面。
+      for (final prepared in picked.images) {
+        if (!mounted) return;
+        await _storeImage(prepared);
+      }
+      if (picked.failed.isNotEmpty) {
+        _toast('有 ${picked.failed.length} 张没插进来：${picked.failed.first}');
+      }
     } on ImageTooLargeException catch (error) {
       _toast(error.message);
     } catch (error) {
@@ -1108,6 +1234,11 @@ class _NoteEditPageState extends State<NoteEditPage> {
       _scheduleReveal();
     }
 
+    // 手机和平板才用「双击才弹键盘」这套；桌面上键盘本来就不用管。
+    final platform = Theme.of(context).platform;
+    _lazyKeyboard =
+        platform == TargetPlatform.android || platform == TargetPlatform.iOS;
+
     return SafeArea(
       child: Column(
         children: [
@@ -1144,6 +1275,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
                         autoFocus: true,
                         placeholder: '写点什么…',
                         editorKey: _editorKey,
+                        onTapDown: _handleTapDown,
                         embedBuilders: [
                           NoteImageEmbedBuilder(
                             infoOf: _imageInfoOf,
@@ -1185,6 +1317,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
   /// 它内部带 flex 的 Row 会直接报错。
   Widget _buildToolbar(QuillController controller) {
     return QuillSimpleToolbar(
+      key: _toolbarKey,
       controller: controller,
       config: const QuillSimpleToolbarConfig(
         // 按钮收紧一点：一排要塞下字号加六种样式，默认尺寸在窄屏手机上会顶到边框。
@@ -1259,8 +1392,25 @@ class _NoteEditPageState extends State<NoteEditPage> {
         ),
       );
     }
+
+    // 手机上选区靠上时，这条浮动菜单会盖住顶上的格式栏（安卓端报过）。
+    // 把锚点整体往下让出格式栏的高度：宁可压住一点正文，也别把工具栏挡住。
+    var anchors = editorState.contextMenuAnchors;
+    final toolbarHeight =
+        (_toolbarKey.currentContext?.findRenderObject() as RenderBox?)
+            ?.size
+            .height ??
+        0;
+    if (_lazyKeyboard && toolbarHeight > 0) {
+      final shift = Offset(0, toolbarHeight + 4);
+      final secondary = anchors.secondaryAnchor;
+      anchors = TextSelectionToolbarAnchors(
+        primaryAnchor: anchors.primaryAnchor + shift,
+        secondaryAnchor: secondary == null ? null : secondary + shift,
+      );
+    }
     return AdaptiveTextSelectionToolbar.buttonItems(
-      anchors: editorState.contextMenuAnchors,
+      anchors: anchors,
       buttonItems: items,
     );
   }

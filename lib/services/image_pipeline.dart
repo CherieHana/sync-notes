@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
+import 'package:path/path.dart' as p;
 
 /// 处理好的图片：已经压到合适的尺寸和体积，可以直接落盘上传。
 class PreparedImage {
@@ -22,6 +23,18 @@ class ImageTooLargeException implements Exception {
 
   @override
   String toString() => message;
+}
+
+/// 一次选图的结果：成功的按选中顺序排好，失败的带着原因。
+class PickedImages {
+  const PickedImages({this.images = const [], this.failed = const []});
+
+  final List<PreparedImage> images;
+
+  /// 每一条是「哪张图 + 为什么没进来」，用来给用户一句提示。
+  final List<String> failed;
+
+  bool get isEmpty => images.isEmpty && failed.isEmpty;
 }
 
 /// 选图与压缩。
@@ -56,19 +69,47 @@ class ImagePipeline {
     return imageExtensions.any(lower.endsWith);
   }
 
-  /// 选一张图。返回 null 表示用户取消了。
-  static Future<PreparedImage?> pick({bool fromCamera = false}) async {
+  /// 选图。相册支持一次选多张，按选中的先后返回；相机一次一张。
+  ///
+  /// 单张失败不打断整批：能插的先插进去，失败的在 [_PickedImages.failed] 里报给用户。
+  static Future<PickedImages> pickMany({bool fromCamera = false}) async {
     final picker = ImagePicker();
-    final picked = await picker.pickImage(
-      source: fromCamera ? ImageSource.camera : ImageSource.gallery,
-    );
-    if (picked == null) return null;
-
-    final raw = await picked.readAsBytes();
-    if (raw.length > maxSourceBytes) {
-      throw const ImageTooLargeException('原图超过 20MB，换一张小一点的吧');
+    if (fromCamera) {
+      final picked = await picker.pickImage(source: ImageSource.camera);
+      if (picked == null) return const PickedImages();
+      return _prepareAll([picked]);
     }
-    return prepare(raw);
+
+    final picked = await picker.pickMultiImage();
+    if (picked.isEmpty) return const PickedImages();
+    return _prepareAll(picked);
+  }
+
+  /// 选一张图。返回 null 表示用户取消了。相机和「只想要一张」的场景用这个。
+  static Future<PreparedImage?> pick({bool fromCamera = false}) async {
+    final picked = await pickMany(fromCamera: fromCamera);
+    return picked.images.isEmpty ? null : picked.images.first;
+  }
+
+  static Future<PickedImages> _prepareAll(List<XFile> files) async {
+    final images = <PreparedImage>[];
+    final failed = <String>[];
+
+    for (final file in files) {
+      final name = p.basename(file.path);
+      try {
+        final raw = await file.readAsBytes();
+        if (raw.length > maxSourceBytes) {
+          throw const ImageTooLargeException('原图超过 20MB');
+        }
+        images.add(await prepare(raw));
+      } on ImageTooLargeException catch (error) {
+        failed.add('$name：${error.message}');
+      } catch (_) {
+        failed.add('$name：读不出来');
+      }
+    }
+    return PickedImages(images: images, failed: failed);
   }
 
   /// 压缩。解码和重编码放在后台 isolate 里做，免得卡住界面。

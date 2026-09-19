@@ -116,6 +116,26 @@ void main() {
       atEnd.insert(endCaret, '结尾');
       expect(atEnd.toPlainText(), '正文\n\uFFFC\n结尾\n');
     });
+
+    test('连着插两个块，顺序和先后一致', () {
+      const second = '99999999-9999-9999-9999-999999999999';
+      final document = RichBody.documentFrom('标题\n');
+
+      var caret = RichBody.insertBlockEmbed(
+        document,
+        2,
+        BlockEmbed.image(imageId),
+      );
+      caret = RichBody.insertBlockEmbed(
+        document,
+        caret,
+        BlockEmbed.image(second),
+      );
+
+      // 一张一行，第一张在上，光标落在最后一行空行上。
+      expect(document.toPlainText(), '标题\n\uFFFC\n\uFFFC\n\n');
+      expect(imageIdsIn(RichBody.encode(document)).toList(), [imageId, second]);
+    });
   });
 
   test('正文格式判定：JSON 数组算富文本，普通文字不算', () {
