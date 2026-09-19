@@ -67,6 +67,27 @@ class NoteImages extends Table {
   Set<Column> get primaryKey => {id};
 }
 
+/// 本地手写画布。笔迹本身是归一化坐标的 JSON，不占多少空间，
+/// 直接存在这一列里，不必像图片那样单独放存储桶。
+class NoteInks extends Table {
+  TextColumn get id => text()();
+  TextColumn get strokes => text().withDefault(const Constant('[]'))();
+  IntColumn get canvasWidth => integer().withDefault(const Constant(1000))();
+  IntColumn get canvasHeight => integer().withDefault(const Constant(1400))();
+  IntColumn get version => integer().withDefault(const Constant(1))();
+  IntColumn get baseVersion => integer().withDefault(const Constant(0))();
+  DateTimeColumn get createdAt => dateTime()();
+  DateTimeColumn get updatedAt => dateTime()();
+  DateTimeColumn get serverUpdatedAt => dateTime().nullable()();
+  DateTimeColumn get deletedAt => dateTime().nullable()();
+  BoolColumn get dirty => boolean().withDefault(const Constant(false))();
+  BoolColumn get isNew => boolean().withDefault(const Constant(false))();
+  TextColumn get lastDeviceId => text().nullable()();
+
+  @override
+  Set<Column> get primaryKey => {id};
+}
+
 /// 同步用的零碎状态：本机标识、三张表各自的拉取水位。
 class SyncMetaEntries extends Table {
   TextColumn get key => text()();
@@ -76,14 +97,14 @@ class SyncMetaEntries extends Table {
   Set<Column> get primaryKey => {key};
 }
 
-@DriftDatabase(tables: [Notes, Folders, NoteImages, SyncMetaEntries])
+@DriftDatabase(tables: [Notes, Folders, NoteImages, NoteInks, SyncMetaEntries])
 class AppDatabase extends _$AppDatabase {
   /// 数据库文件按账号分开，换账号登录时不会看到上一个账号的笔记。
   AppDatabase([String name = 'sync_notes'])
     : super(driftDatabase(name: name));
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -101,6 +122,10 @@ class AppDatabase extends _$AppDatabase {
         await m.addColumn(notes, notes.locked);
         await m.addColumn(notes, notes.passphraseHash);
         await m.addColumn(notes, notes.passphraseSalt);
+      }
+      // v2 → v3：加手写画布。
+      if (from < 3) {
+        await m.createTable(noteInks);
       }
     },
   );

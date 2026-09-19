@@ -95,11 +95,36 @@ create index if not exists note_images_user_updated_idx
   on public.note_images (user_id, updated_at desc);
 
 -- ---------------------------------------------------------------------------
--- 4. 行级权限：只能读写属于自己的行
+-- 4. 手写画布表
+--    笔迹是归一化坐标的 JSON，一小段字也就几十 KB，直接放这一列，
+--    不必像图片那样单独扔进存储桶。可以反复修改，所以带版本号走乐观锁。
+-- ---------------------------------------------------------------------------
+create table if not exists public.note_inks (
+  id             uuid primary key default gen_random_uuid(),
+  user_id        uuid not null default auth.uid() references auth.users (id) on delete cascade,
+  strokes        text not null default '[]',
+  canvas_width   integer not null default 1000,
+  canvas_height  integer not null default 1400,
+  version        integer not null default 1,
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now(),
+  deleted_at     timestamptz,
+  last_device_id text
+);
+
+comment on table public.note_inks is '手写画布；strokes 是归一化坐标的 JSON 数组';
+comment on column public.note_inks.canvas_width is '画布标称宽度，笔迹按它归一化，换设备也能等比还原';
+
+create index if not exists note_inks_user_updated_idx
+  on public.note_inks (user_id, updated_at desc);
+
+-- ---------------------------------------------------------------------------
+-- 5. 行级权限：只能读写属于自己的行
 -- ---------------------------------------------------------------------------
 alter table public.folders enable row level security;
 alter table public.notes enable row level security;
 alter table public.note_images enable row level security;
+alter table public.note_inks enable row level security;
 
 drop policy if exists folders_own on public.folders;
 create policy folders_own on public.folders
@@ -127,12 +152,18 @@ create policy note_images_own on public.note_images
   for all to authenticated
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
+drop policy if exists note_inks_own on public.note_inks;
+create policy note_inks_own on public.note_inks
+  for all to authenticated
+  using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
 grant select, insert, update, delete on public.folders to authenticated;
 grant select, insert, update, delete on public.notes to authenticated;
 grant select, insert, update, delete on public.note_images to authenticated;
+grant select, insert, update, delete on public.note_inks to authenticated;
 
 -- ---------------------------------------------------------------------------
--- 5. 更新时间以服务端时钟为准
+-- 6. 更新时间以服务端时钟为准
 --    客户端只负责把 version 递增加一，updated_at 一律由触发器覆盖，
 --    这样手机和电脑的系统时间不一致也不会影响增量同步。
 -- ---------------------------------------------------------------------------
@@ -164,11 +195,17 @@ create trigger note_images_touch_updated_at
   for each row
   execute function public.touch_updated_at();
 
+drop trigger if exists note_inks_touch_updated_at on public.note_inks;
+create trigger note_inks_touch_updated_at
+  before update on public.note_inks
+  for each row
+  execute function public.touch_updated_at();
+
 -- 上一版用的函数，现在合并成 touch_updated_at 了
 drop function if exists public.notes_touch_updated_at();
 
 -- ---------------------------------------------------------------------------
--- 6. 实时推送
+-- 7. 实时推送
 --    replica identity full 让更新/删除事件带上完整旧行，
 --    Realtime 才能在 RLS 下正确判断这条变更是否该推给当前用户。
 --    图片表不进实时通道：它只在插入时变化一次，靠拉取水位就够了。

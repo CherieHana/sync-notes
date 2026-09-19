@@ -14,6 +14,7 @@ class SupabaseRemoteApi implements RemoteApi {
   static const String _notes = 'notes';
   static const String _folders = 'folders';
   static const String _images = 'note_images';
+  static const String _inks = 'note_inks';
   static const String _imageBucket = 'note-images';
 
   /// 单次拉取的条数上限。个人笔记量远达不到这个量级，
@@ -325,6 +326,100 @@ class SupabaseRemoteApi implements RemoteApi {
       rethrow;
     } catch (error) {
       throw RemoteApiException('删除图片文件失败', cause: error);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // 手写画布
+  // ---------------------------------------------------------------------
+
+  @override
+  Future<List<RemoteInk>> fetchInksChangedSince(DateTime? since) async {
+    try {
+      final base = _client.from(_inks).select();
+      final filtered = since == null
+          ? base
+          : base.gte('updated_at', since.toUtc().toIso8601String());
+      final rows = await filtered
+          .order('updated_at', ascending: true)
+          .limit(_pageSize);
+      return rows.map(RemoteInk.fromJson).toList();
+    } on RemoteApiException {
+      rethrow;
+    } catch (error) {
+      throw RemoteApiException('拉取手写画布失败', cause: error);
+    }
+  }
+
+  @override
+  Future<RemoteInk?> fetchInkById(String id) async {
+    try {
+      final rows = await _client.from(_inks).select().eq('id', id).limit(1);
+      if (rows.isEmpty) return null;
+      return RemoteInk.fromJson(rows.first);
+    } on RemoteApiException {
+      rethrow;
+    } catch (error) {
+      throw RemoteApiException('读取手写画布失败', cause: error);
+    }
+  }
+
+  @override
+  Future<RemoteInk> insertInk({
+    required String id,
+    required String strokes,
+    required int canvasWidth,
+    required int canvasHeight,
+    String? lastDeviceId,
+  }) async {
+    try {
+      final rows = await _client
+          .from(_inks)
+          .upsert({
+            'id': id,
+            'strokes': strokes,
+            'canvas_width': canvasWidth,
+            'canvas_height': canvasHeight,
+            'last_device_id': lastDeviceId,
+          })
+          .select();
+      if (rows.isEmpty) {
+        throw const RemoteApiException('上传后服务端没有返回记录');
+      }
+      return RemoteInk.fromJson(rows.first);
+    } on RemoteApiException {
+      rethrow;
+    } catch (error) {
+      throw RemoteApiException('上传手写画布失败', cause: error);
+    }
+  }
+
+  @override
+  Future<RemoteInk?> updateInkIfVersion({
+    required String id,
+    required String strokes,
+    required int expectedVersion,
+    required String lastDeviceId,
+    DateTime? deletedAt,
+  }) async {
+    try {
+      final rows = await _client
+          .from(_inks)
+          .update({
+            'strokes': strokes,
+            'version': expectedVersion + 1,
+            'last_device_id': lastDeviceId,
+            'deleted_at': deletedAt?.toUtc().toIso8601String(),
+          })
+          .eq('id', id)
+          .eq('version', expectedVersion)
+          .select();
+      if (rows.isEmpty) return null;
+      return RemoteInk.fromJson(rows.first);
+    } on RemoteApiException {
+      rethrow;
+    } catch (error) {
+      throw RemoteApiException('更新手写画布失败', cause: error);
     }
   }
 

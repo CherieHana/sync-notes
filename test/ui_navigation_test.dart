@@ -201,6 +201,71 @@ void main() {
     expect(find.text('移动到…'), findsOneWidget);
   });
 
+  testWidgets('长按笔记弹出的菜单里有删除', (tester) async {
+    final services = buildTestServices('ui-test-user');
+    // 远端也要有这条，否则同步时会被当成「服务端删了」而被重建。
+    (services.remote as FakeRemoteApi).seed(
+      remoteNote(id: 'n1', body: '要被删的'),
+    );
+    await services.local.createNote(
+      localNote(
+        id: 'n1',
+        body: '要被删的',
+        version: 1,
+        baseVersion: 1,
+        dirty: false,
+      ),
+    );
+    await pumpWithServices(tester, services);
+
+    // 原来长按是直接跳到「移动到…」，手机上想删笔记只能左滑，很多人不知道。
+    await tester.longPress(find.text('要被删的'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('移动到…'), findsOneWidget);
+    expect(find.text('删除'), findsOneWidget);
+
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+
+    expect((await services.local.findById('n1'))!.isDeleted, isTrue);
+  });
+
+  testWidgets('管理目录里能重命名和删除', (tester) async {
+    final services = buildTestServices('ui-test-user');
+    final at = DateTime.now();
+    (services.remote as FakeRemoteApi).seedFolder(
+      remoteFolder(id: 'f1', name: '临时目录'),
+    );
+    await services.local.createFolder(
+      LocalFolder(
+        id: 'f1',
+        name: '临时目录',
+        version: 1,
+        baseVersion: 1,
+        createdAt: at,
+        updatedAt: at,
+        dirty: false,
+      ),
+    );
+    await pumpWithServices(tester, services);
+
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('管理目录'));
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(ListTile, '临时目录'), findsOneWidget);
+    expect(find.byTooltip('重命名'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('删除'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('删除'));
+    await tester.pumpAndSettle();
+
+    expect((await services.local.findFolderById('f1'))!.isDeleted, isTrue);
+  });
+
   testWidgets('左滑删除后能点撤销把笔记找回来', (tester) async {
     final services = buildTestServices('ui-test-user');
     await services.local.createNote(

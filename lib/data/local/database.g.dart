@@ -2108,6 +2108,776 @@ class NoteImagesCompanion extends UpdateCompanion<NoteImage> {
   }
 }
 
+class $NoteInksTable extends NoteInks with TableInfo<$NoteInksTable, NoteInk> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $NoteInksTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<String> id = GeneratedColumn<String>(
+    'id',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _strokesMeta = const VerificationMeta(
+    'strokes',
+  );
+  @override
+  late final GeneratedColumn<String> strokes = GeneratedColumn<String>(
+    'strokes',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+    defaultValue: const Constant('[]'),
+  );
+  static const VerificationMeta _canvasWidthMeta = const VerificationMeta(
+    'canvasWidth',
+  );
+  @override
+  late final GeneratedColumn<int> canvasWidth = GeneratedColumn<int>(
+    'canvas_width',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(1000),
+  );
+  static const VerificationMeta _canvasHeightMeta = const VerificationMeta(
+    'canvasHeight',
+  );
+  @override
+  late final GeneratedColumn<int> canvasHeight = GeneratedColumn<int>(
+    'canvas_height',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(1400),
+  );
+  static const VerificationMeta _versionMeta = const VerificationMeta(
+    'version',
+  );
+  @override
+  late final GeneratedColumn<int> version = GeneratedColumn<int>(
+    'version',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(1),
+  );
+  static const VerificationMeta _baseVersionMeta = const VerificationMeta(
+    'baseVersion',
+  );
+  @override
+  late final GeneratedColumn<int> baseVersion = GeneratedColumn<int>(
+    'base_version',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _updatedAtMeta = const VerificationMeta(
+    'updatedAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> updatedAt = GeneratedColumn<DateTime>(
+    'updated_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _serverUpdatedAtMeta = const VerificationMeta(
+    'serverUpdatedAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> serverUpdatedAt =
+      GeneratedColumn<DateTime>(
+        'server_updated_at',
+        aliasedName,
+        true,
+        type: DriftSqlType.dateTime,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _deletedAtMeta = const VerificationMeta(
+    'deletedAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> deletedAt = GeneratedColumn<DateTime>(
+    'deleted_at',
+    aliasedName,
+    true,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _dirtyMeta = const VerificationMeta('dirty');
+  @override
+  late final GeneratedColumn<bool> dirty = GeneratedColumn<bool>(
+    'dirty',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("dirty" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
+  static const VerificationMeta _isNewMeta = const VerificationMeta('isNew');
+  @override
+  late final GeneratedColumn<bool> isNew = GeneratedColumn<bool>(
+    'is_new',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("is_new" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
+  static const VerificationMeta _lastDeviceIdMeta = const VerificationMeta(
+    'lastDeviceId',
+  );
+  @override
+  late final GeneratedColumn<String> lastDeviceId = GeneratedColumn<String>(
+    'last_device_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    strokes,
+    canvasWidth,
+    canvasHeight,
+    version,
+    baseVersion,
+    createdAt,
+    updatedAt,
+    serverUpdatedAt,
+    deletedAt,
+    dirty,
+    isNew,
+    lastDeviceId,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'note_inks';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<NoteInk> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    } else if (isInserting) {
+      context.missing(_idMeta);
+    }
+    if (data.containsKey('strokes')) {
+      context.handle(
+        _strokesMeta,
+        strokes.isAcceptableOrUnknown(data['strokes']!, _strokesMeta),
+      );
+    }
+    if (data.containsKey('canvas_width')) {
+      context.handle(
+        _canvasWidthMeta,
+        canvasWidth.isAcceptableOrUnknown(
+          data['canvas_width']!,
+          _canvasWidthMeta,
+        ),
+      );
+    }
+    if (data.containsKey('canvas_height')) {
+      context.handle(
+        _canvasHeightMeta,
+        canvasHeight.isAcceptableOrUnknown(
+          data['canvas_height']!,
+          _canvasHeightMeta,
+        ),
+      );
+    }
+    if (data.containsKey('version')) {
+      context.handle(
+        _versionMeta,
+        version.isAcceptableOrUnknown(data['version']!, _versionMeta),
+      );
+    }
+    if (data.containsKey('base_version')) {
+      context.handle(
+        _baseVersionMeta,
+        baseVersion.isAcceptableOrUnknown(
+          data['base_version']!,
+          _baseVersionMeta,
+        ),
+      );
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_createdAtMeta);
+    }
+    if (data.containsKey('updated_at')) {
+      context.handle(
+        _updatedAtMeta,
+        updatedAt.isAcceptableOrUnknown(data['updated_at']!, _updatedAtMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_updatedAtMeta);
+    }
+    if (data.containsKey('server_updated_at')) {
+      context.handle(
+        _serverUpdatedAtMeta,
+        serverUpdatedAt.isAcceptableOrUnknown(
+          data['server_updated_at']!,
+          _serverUpdatedAtMeta,
+        ),
+      );
+    }
+    if (data.containsKey('deleted_at')) {
+      context.handle(
+        _deletedAtMeta,
+        deletedAt.isAcceptableOrUnknown(data['deleted_at']!, _deletedAtMeta),
+      );
+    }
+    if (data.containsKey('dirty')) {
+      context.handle(
+        _dirtyMeta,
+        dirty.isAcceptableOrUnknown(data['dirty']!, _dirtyMeta),
+      );
+    }
+    if (data.containsKey('is_new')) {
+      context.handle(
+        _isNewMeta,
+        isNew.isAcceptableOrUnknown(data['is_new']!, _isNewMeta),
+      );
+    }
+    if (data.containsKey('last_device_id')) {
+      context.handle(
+        _lastDeviceIdMeta,
+        lastDeviceId.isAcceptableOrUnknown(
+          data['last_device_id']!,
+          _lastDeviceIdMeta,
+        ),
+      );
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  NoteInk map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return NoteInk(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}id'],
+      )!,
+      strokes: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}strokes'],
+      )!,
+      canvasWidth: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}canvas_width'],
+      )!,
+      canvasHeight: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}canvas_height'],
+      )!,
+      version: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}version'],
+      )!,
+      baseVersion: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}base_version'],
+      )!,
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}created_at'],
+      )!,
+      updatedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}updated_at'],
+      )!,
+      serverUpdatedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}server_updated_at'],
+      ),
+      deletedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}deleted_at'],
+      ),
+      dirty: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}dirty'],
+      )!,
+      isNew: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}is_new'],
+      )!,
+      lastDeviceId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}last_device_id'],
+      ),
+    );
+  }
+
+  @override
+  $NoteInksTable createAlias(String alias) {
+    return $NoteInksTable(attachedDatabase, alias);
+  }
+}
+
+class NoteInk extends DataClass implements Insertable<NoteInk> {
+  final String id;
+  final String strokes;
+  final int canvasWidth;
+  final int canvasHeight;
+  final int version;
+  final int baseVersion;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final DateTime? serverUpdatedAt;
+  final DateTime? deletedAt;
+  final bool dirty;
+  final bool isNew;
+  final String? lastDeviceId;
+  const NoteInk({
+    required this.id,
+    required this.strokes,
+    required this.canvasWidth,
+    required this.canvasHeight,
+    required this.version,
+    required this.baseVersion,
+    required this.createdAt,
+    required this.updatedAt,
+    this.serverUpdatedAt,
+    this.deletedAt,
+    required this.dirty,
+    required this.isNew,
+    this.lastDeviceId,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<String>(id);
+    map['strokes'] = Variable<String>(strokes);
+    map['canvas_width'] = Variable<int>(canvasWidth);
+    map['canvas_height'] = Variable<int>(canvasHeight);
+    map['version'] = Variable<int>(version);
+    map['base_version'] = Variable<int>(baseVersion);
+    map['created_at'] = Variable<DateTime>(createdAt);
+    map['updated_at'] = Variable<DateTime>(updatedAt);
+    if (!nullToAbsent || serverUpdatedAt != null) {
+      map['server_updated_at'] = Variable<DateTime>(serverUpdatedAt);
+    }
+    if (!nullToAbsent || deletedAt != null) {
+      map['deleted_at'] = Variable<DateTime>(deletedAt);
+    }
+    map['dirty'] = Variable<bool>(dirty);
+    map['is_new'] = Variable<bool>(isNew);
+    if (!nullToAbsent || lastDeviceId != null) {
+      map['last_device_id'] = Variable<String>(lastDeviceId);
+    }
+    return map;
+  }
+
+  NoteInksCompanion toCompanion(bool nullToAbsent) {
+    return NoteInksCompanion(
+      id: Value(id),
+      strokes: Value(strokes),
+      canvasWidth: Value(canvasWidth),
+      canvasHeight: Value(canvasHeight),
+      version: Value(version),
+      baseVersion: Value(baseVersion),
+      createdAt: Value(createdAt),
+      updatedAt: Value(updatedAt),
+      serverUpdatedAt: serverUpdatedAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(serverUpdatedAt),
+      deletedAt: deletedAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(deletedAt),
+      dirty: Value(dirty),
+      isNew: Value(isNew),
+      lastDeviceId: lastDeviceId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(lastDeviceId),
+    );
+  }
+
+  factory NoteInk.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return NoteInk(
+      id: serializer.fromJson<String>(json['id']),
+      strokes: serializer.fromJson<String>(json['strokes']),
+      canvasWidth: serializer.fromJson<int>(json['canvasWidth']),
+      canvasHeight: serializer.fromJson<int>(json['canvasHeight']),
+      version: serializer.fromJson<int>(json['version']),
+      baseVersion: serializer.fromJson<int>(json['baseVersion']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+      updatedAt: serializer.fromJson<DateTime>(json['updatedAt']),
+      serverUpdatedAt: serializer.fromJson<DateTime?>(json['serverUpdatedAt']),
+      deletedAt: serializer.fromJson<DateTime?>(json['deletedAt']),
+      dirty: serializer.fromJson<bool>(json['dirty']),
+      isNew: serializer.fromJson<bool>(json['isNew']),
+      lastDeviceId: serializer.fromJson<String?>(json['lastDeviceId']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<String>(id),
+      'strokes': serializer.toJson<String>(strokes),
+      'canvasWidth': serializer.toJson<int>(canvasWidth),
+      'canvasHeight': serializer.toJson<int>(canvasHeight),
+      'version': serializer.toJson<int>(version),
+      'baseVersion': serializer.toJson<int>(baseVersion),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
+      'updatedAt': serializer.toJson<DateTime>(updatedAt),
+      'serverUpdatedAt': serializer.toJson<DateTime?>(serverUpdatedAt),
+      'deletedAt': serializer.toJson<DateTime?>(deletedAt),
+      'dirty': serializer.toJson<bool>(dirty),
+      'isNew': serializer.toJson<bool>(isNew),
+      'lastDeviceId': serializer.toJson<String?>(lastDeviceId),
+    };
+  }
+
+  NoteInk copyWith({
+    String? id,
+    String? strokes,
+    int? canvasWidth,
+    int? canvasHeight,
+    int? version,
+    int? baseVersion,
+    DateTime? createdAt,
+    DateTime? updatedAt,
+    Value<DateTime?> serverUpdatedAt = const Value.absent(),
+    Value<DateTime?> deletedAt = const Value.absent(),
+    bool? dirty,
+    bool? isNew,
+    Value<String?> lastDeviceId = const Value.absent(),
+  }) => NoteInk(
+    id: id ?? this.id,
+    strokes: strokes ?? this.strokes,
+    canvasWidth: canvasWidth ?? this.canvasWidth,
+    canvasHeight: canvasHeight ?? this.canvasHeight,
+    version: version ?? this.version,
+    baseVersion: baseVersion ?? this.baseVersion,
+    createdAt: createdAt ?? this.createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+    serverUpdatedAt: serverUpdatedAt.present
+        ? serverUpdatedAt.value
+        : this.serverUpdatedAt,
+    deletedAt: deletedAt.present ? deletedAt.value : this.deletedAt,
+    dirty: dirty ?? this.dirty,
+    isNew: isNew ?? this.isNew,
+    lastDeviceId: lastDeviceId.present ? lastDeviceId.value : this.lastDeviceId,
+  );
+  NoteInk copyWithCompanion(NoteInksCompanion data) {
+    return NoteInk(
+      id: data.id.present ? data.id.value : this.id,
+      strokes: data.strokes.present ? data.strokes.value : this.strokes,
+      canvasWidth: data.canvasWidth.present
+          ? data.canvasWidth.value
+          : this.canvasWidth,
+      canvasHeight: data.canvasHeight.present
+          ? data.canvasHeight.value
+          : this.canvasHeight,
+      version: data.version.present ? data.version.value : this.version,
+      baseVersion: data.baseVersion.present
+          ? data.baseVersion.value
+          : this.baseVersion,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+      serverUpdatedAt: data.serverUpdatedAt.present
+          ? data.serverUpdatedAt.value
+          : this.serverUpdatedAt,
+      deletedAt: data.deletedAt.present ? data.deletedAt.value : this.deletedAt,
+      dirty: data.dirty.present ? data.dirty.value : this.dirty,
+      isNew: data.isNew.present ? data.isNew.value : this.isNew,
+      lastDeviceId: data.lastDeviceId.present
+          ? data.lastDeviceId.value
+          : this.lastDeviceId,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('NoteInk(')
+          ..write('id: $id, ')
+          ..write('strokes: $strokes, ')
+          ..write('canvasWidth: $canvasWidth, ')
+          ..write('canvasHeight: $canvasHeight, ')
+          ..write('version: $version, ')
+          ..write('baseVersion: $baseVersion, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('serverUpdatedAt: $serverUpdatedAt, ')
+          ..write('deletedAt: $deletedAt, ')
+          ..write('dirty: $dirty, ')
+          ..write('isNew: $isNew, ')
+          ..write('lastDeviceId: $lastDeviceId')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    id,
+    strokes,
+    canvasWidth,
+    canvasHeight,
+    version,
+    baseVersion,
+    createdAt,
+    updatedAt,
+    serverUpdatedAt,
+    deletedAt,
+    dirty,
+    isNew,
+    lastDeviceId,
+  );
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is NoteInk &&
+          other.id == this.id &&
+          other.strokes == this.strokes &&
+          other.canvasWidth == this.canvasWidth &&
+          other.canvasHeight == this.canvasHeight &&
+          other.version == this.version &&
+          other.baseVersion == this.baseVersion &&
+          other.createdAt == this.createdAt &&
+          other.updatedAt == this.updatedAt &&
+          other.serverUpdatedAt == this.serverUpdatedAt &&
+          other.deletedAt == this.deletedAt &&
+          other.dirty == this.dirty &&
+          other.isNew == this.isNew &&
+          other.lastDeviceId == this.lastDeviceId);
+}
+
+class NoteInksCompanion extends UpdateCompanion<NoteInk> {
+  final Value<String> id;
+  final Value<String> strokes;
+  final Value<int> canvasWidth;
+  final Value<int> canvasHeight;
+  final Value<int> version;
+  final Value<int> baseVersion;
+  final Value<DateTime> createdAt;
+  final Value<DateTime> updatedAt;
+  final Value<DateTime?> serverUpdatedAt;
+  final Value<DateTime?> deletedAt;
+  final Value<bool> dirty;
+  final Value<bool> isNew;
+  final Value<String?> lastDeviceId;
+  final Value<int> rowid;
+  const NoteInksCompanion({
+    this.id = const Value.absent(),
+    this.strokes = const Value.absent(),
+    this.canvasWidth = const Value.absent(),
+    this.canvasHeight = const Value.absent(),
+    this.version = const Value.absent(),
+    this.baseVersion = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.updatedAt = const Value.absent(),
+    this.serverUpdatedAt = const Value.absent(),
+    this.deletedAt = const Value.absent(),
+    this.dirty = const Value.absent(),
+    this.isNew = const Value.absent(),
+    this.lastDeviceId = const Value.absent(),
+    this.rowid = const Value.absent(),
+  });
+  NoteInksCompanion.insert({
+    required String id,
+    this.strokes = const Value.absent(),
+    this.canvasWidth = const Value.absent(),
+    this.canvasHeight = const Value.absent(),
+    this.version = const Value.absent(),
+    this.baseVersion = const Value.absent(),
+    required DateTime createdAt,
+    required DateTime updatedAt,
+    this.serverUpdatedAt = const Value.absent(),
+    this.deletedAt = const Value.absent(),
+    this.dirty = const Value.absent(),
+    this.isNew = const Value.absent(),
+    this.lastDeviceId = const Value.absent(),
+    this.rowid = const Value.absent(),
+  }) : id = Value(id),
+       createdAt = Value(createdAt),
+       updatedAt = Value(updatedAt);
+  static Insertable<NoteInk> custom({
+    Expression<String>? id,
+    Expression<String>? strokes,
+    Expression<int>? canvasWidth,
+    Expression<int>? canvasHeight,
+    Expression<int>? version,
+    Expression<int>? baseVersion,
+    Expression<DateTime>? createdAt,
+    Expression<DateTime>? updatedAt,
+    Expression<DateTime>? serverUpdatedAt,
+    Expression<DateTime>? deletedAt,
+    Expression<bool>? dirty,
+    Expression<bool>? isNew,
+    Expression<String>? lastDeviceId,
+    Expression<int>? rowid,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (strokes != null) 'strokes': strokes,
+      if (canvasWidth != null) 'canvas_width': canvasWidth,
+      if (canvasHeight != null) 'canvas_height': canvasHeight,
+      if (version != null) 'version': version,
+      if (baseVersion != null) 'base_version': baseVersion,
+      if (createdAt != null) 'created_at': createdAt,
+      if (updatedAt != null) 'updated_at': updatedAt,
+      if (serverUpdatedAt != null) 'server_updated_at': serverUpdatedAt,
+      if (deletedAt != null) 'deleted_at': deletedAt,
+      if (dirty != null) 'dirty': dirty,
+      if (isNew != null) 'is_new': isNew,
+      if (lastDeviceId != null) 'last_device_id': lastDeviceId,
+      if (rowid != null) 'rowid': rowid,
+    });
+  }
+
+  NoteInksCompanion copyWith({
+    Value<String>? id,
+    Value<String>? strokes,
+    Value<int>? canvasWidth,
+    Value<int>? canvasHeight,
+    Value<int>? version,
+    Value<int>? baseVersion,
+    Value<DateTime>? createdAt,
+    Value<DateTime>? updatedAt,
+    Value<DateTime?>? serverUpdatedAt,
+    Value<DateTime?>? deletedAt,
+    Value<bool>? dirty,
+    Value<bool>? isNew,
+    Value<String?>? lastDeviceId,
+    Value<int>? rowid,
+  }) {
+    return NoteInksCompanion(
+      id: id ?? this.id,
+      strokes: strokes ?? this.strokes,
+      canvasWidth: canvasWidth ?? this.canvasWidth,
+      canvasHeight: canvasHeight ?? this.canvasHeight,
+      version: version ?? this.version,
+      baseVersion: baseVersion ?? this.baseVersion,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      serverUpdatedAt: serverUpdatedAt ?? this.serverUpdatedAt,
+      deletedAt: deletedAt ?? this.deletedAt,
+      dirty: dirty ?? this.dirty,
+      isNew: isNew ?? this.isNew,
+      lastDeviceId: lastDeviceId ?? this.lastDeviceId,
+      rowid: rowid ?? this.rowid,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<String>(id.value);
+    }
+    if (strokes.present) {
+      map['strokes'] = Variable<String>(strokes.value);
+    }
+    if (canvasWidth.present) {
+      map['canvas_width'] = Variable<int>(canvasWidth.value);
+    }
+    if (canvasHeight.present) {
+      map['canvas_height'] = Variable<int>(canvasHeight.value);
+    }
+    if (version.present) {
+      map['version'] = Variable<int>(version.value);
+    }
+    if (baseVersion.present) {
+      map['base_version'] = Variable<int>(baseVersion.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<DateTime>(createdAt.value);
+    }
+    if (updatedAt.present) {
+      map['updated_at'] = Variable<DateTime>(updatedAt.value);
+    }
+    if (serverUpdatedAt.present) {
+      map['server_updated_at'] = Variable<DateTime>(serverUpdatedAt.value);
+    }
+    if (deletedAt.present) {
+      map['deleted_at'] = Variable<DateTime>(deletedAt.value);
+    }
+    if (dirty.present) {
+      map['dirty'] = Variable<bool>(dirty.value);
+    }
+    if (isNew.present) {
+      map['is_new'] = Variable<bool>(isNew.value);
+    }
+    if (lastDeviceId.present) {
+      map['last_device_id'] = Variable<String>(lastDeviceId.value);
+    }
+    if (rowid.present) {
+      map['rowid'] = Variable<int>(rowid.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('NoteInksCompanion(')
+          ..write('id: $id, ')
+          ..write('strokes: $strokes, ')
+          ..write('canvasWidth: $canvasWidth, ')
+          ..write('canvasHeight: $canvasHeight, ')
+          ..write('version: $version, ')
+          ..write('baseVersion: $baseVersion, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('serverUpdatedAt: $serverUpdatedAt, ')
+          ..write('deletedAt: $deletedAt, ')
+          ..write('dirty: $dirty, ')
+          ..write('isNew: $isNew, ')
+          ..write('lastDeviceId: $lastDeviceId, ')
+          ..write('rowid: $rowid')
+          ..write(')'))
+        .toString();
+  }
+}
+
 class $SyncMetaEntriesTable extends SyncMetaEntries
     with TableInfo<$SyncMetaEntriesTable, SyncMetaEntry> {
   @override
@@ -2322,6 +3092,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final $NotesTable notes = $NotesTable(this);
   late final $FoldersTable folders = $FoldersTable(this);
   late final $NoteImagesTable noteImages = $NoteImagesTable(this);
+  late final $NoteInksTable noteInks = $NoteInksTable(this);
   late final $SyncMetaEntriesTable syncMetaEntries = $SyncMetaEntriesTable(
     this,
   );
@@ -2333,6 +3104,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     notes,
     folders,
     noteImages,
+    noteInks,
     syncMetaEntries,
   ];
   @override
@@ -3343,6 +4115,369 @@ typedef $$NoteImagesTableProcessedTableManager =
       NoteImage,
       PrefetchHooks Function()
     >;
+typedef $$NoteInksTableCreateCompanionBuilder = NoteInksCompanion Function({
+  required String id,
+  Value<String> strokes,
+  Value<int> canvasWidth,
+  Value<int> canvasHeight,
+  Value<int> version,
+  Value<int> baseVersion,
+  required DateTime createdAt,
+  required DateTime updatedAt,
+  Value<DateTime?> serverUpdatedAt,
+  Value<DateTime?> deletedAt,
+  Value<bool> dirty,
+  Value<bool> isNew,
+  Value<String?> lastDeviceId,
+  Value<int> rowid,
+});
+typedef $$NoteInksTableUpdateCompanionBuilder = NoteInksCompanion Function({
+  Value<String> id,
+  Value<String> strokes,
+  Value<int> canvasWidth,
+  Value<int> canvasHeight,
+  Value<int> version,
+  Value<int> baseVersion,
+  Value<DateTime> createdAt,
+  Value<DateTime> updatedAt,
+  Value<DateTime?> serverUpdatedAt,
+  Value<DateTime?> deletedAt,
+  Value<bool> dirty,
+  Value<bool> isNew,
+  Value<String?> lastDeviceId,
+  Value<int> rowid,
+});
+
+class $$NoteInksTableFilterComposer
+    extends Composer<_$AppDatabase, $NoteInksTable> {
+  $$NoteInksTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get strokes => $composableBuilder(
+    column: $table.strokes,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get canvasWidth => $composableBuilder(
+    column: $table.canvasWidth,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get canvasHeight => $composableBuilder(
+    column: $table.canvasHeight,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get version => $composableBuilder(
+    column: $table.version,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get baseVersion => $composableBuilder(
+    column: $table.baseVersion,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get serverUpdatedAt => $composableBuilder(
+    column: $table.serverUpdatedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get deletedAt => $composableBuilder(
+    column: $table.deletedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get dirty => $composableBuilder(
+    column: $table.dirty,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get isNew => $composableBuilder(
+    column: $table.isNew,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get lastDeviceId => $composableBuilder(
+    column: $table.lastDeviceId,
+    builder: (column) => ColumnFilters(column),
+  );
+}
+
+class $$NoteInksTableOrderingComposer
+    extends Composer<_$AppDatabase, $NoteInksTable> {
+  $$NoteInksTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<String> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get strokes => $composableBuilder(
+    column: $table.strokes,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get canvasWidth => $composableBuilder(
+    column: $table.canvasWidth,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get canvasHeight => $composableBuilder(
+    column: $table.canvasHeight,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get version => $composableBuilder(
+    column: $table.version,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get baseVersion => $composableBuilder(
+    column: $table.baseVersion,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get serverUpdatedAt => $composableBuilder(
+    column: $table.serverUpdatedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get deletedAt => $composableBuilder(
+    column: $table.deletedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<bool> get dirty => $composableBuilder(
+    column: $table.dirty,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<bool> get isNew => $composableBuilder(
+    column: $table.isNew,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get lastDeviceId => $composableBuilder(
+    column: $table.lastDeviceId,
+    builder: (column) => ColumnOrderings(column),
+  );
+}
+
+class $$NoteInksTableAnnotationComposer
+    extends Composer<_$AppDatabase, $NoteInksTable> {
+  $$NoteInksTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<String> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get strokes =>
+      $composableBuilder(column: $table.strokes, builder: (column) => column);
+
+  GeneratedColumn<int> get canvasWidth => $composableBuilder(
+    column: $table.canvasWidth,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get canvasHeight => $composableBuilder(
+    column: $table.canvasHeight,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<int> get version =>
+      $composableBuilder(column: $table.version, builder: (column) => column);
+
+  GeneratedColumn<int> get baseVersion => $composableBuilder(
+    column: $table.baseVersion,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get updatedAt =>
+      $composableBuilder(column: $table.updatedAt, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get serverUpdatedAt => $composableBuilder(
+    column: $table.serverUpdatedAt,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<DateTime> get deletedAt =>
+      $composableBuilder(column: $table.deletedAt, builder: (column) => column);
+
+  GeneratedColumn<bool> get dirty =>
+      $composableBuilder(column: $table.dirty, builder: (column) => column);
+
+  GeneratedColumn<bool> get isNew =>
+      $composableBuilder(column: $table.isNew, builder: (column) => column);
+
+  GeneratedColumn<String> get lastDeviceId => $composableBuilder(
+    column: $table.lastDeviceId,
+    builder: (column) => column,
+  );
+}
+
+class $$NoteInksTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $NoteInksTable,
+          NoteInk,
+          $$NoteInksTableFilterComposer,
+          $$NoteInksTableOrderingComposer,
+          $$NoteInksTableAnnotationComposer,
+          $$NoteInksTableCreateCompanionBuilder,
+          $$NoteInksTableUpdateCompanionBuilder,
+          (NoteInk, BaseReferences<_$AppDatabase, $NoteInksTable, NoteInk>),
+          NoteInk,
+          PrefetchHooks Function()
+        > {
+  $$NoteInksTableTableManager(_$AppDatabase db, $NoteInksTable table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$NoteInksTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$NoteInksTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$NoteInksTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<String> id = const Value.absent(),
+                Value<String> strokes = const Value.absent(),
+                Value<int> canvasWidth = const Value.absent(),
+                Value<int> canvasHeight = const Value.absent(),
+                Value<int> version = const Value.absent(),
+                Value<int> baseVersion = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<DateTime> updatedAt = const Value.absent(),
+                Value<DateTime?> serverUpdatedAt = const Value.absent(),
+                Value<DateTime?> deletedAt = const Value.absent(),
+                Value<bool> dirty = const Value.absent(),
+                Value<bool> isNew = const Value.absent(),
+                Value<String?> lastDeviceId = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => NoteInksCompanion(
+                id: id,
+                strokes: strokes,
+                canvasWidth: canvasWidth,
+                canvasHeight: canvasHeight,
+                version: version,
+                baseVersion: baseVersion,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                serverUpdatedAt: serverUpdatedAt,
+                deletedAt: deletedAt,
+                dirty: dirty,
+                isNew: isNew,
+                lastDeviceId: lastDeviceId,
+                rowid: rowid,
+              ),
+          createCompanionCallback:
+              ({
+                required String id,
+                Value<String> strokes = const Value.absent(),
+                Value<int> canvasWidth = const Value.absent(),
+                Value<int> canvasHeight = const Value.absent(),
+                Value<int> version = const Value.absent(),
+                Value<int> baseVersion = const Value.absent(),
+                required DateTime createdAt,
+                required DateTime updatedAt,
+                Value<DateTime?> serverUpdatedAt = const Value.absent(),
+                Value<DateTime?> deletedAt = const Value.absent(),
+                Value<bool> dirty = const Value.absent(),
+                Value<bool> isNew = const Value.absent(),
+                Value<String?> lastDeviceId = const Value.absent(),
+                Value<int> rowid = const Value.absent(),
+              }) => NoteInksCompanion.insert(
+                id: id,
+                strokes: strokes,
+                canvasWidth: canvasWidth,
+                canvasHeight: canvasHeight,
+                version: version,
+                baseVersion: baseVersion,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                serverUpdatedAt: serverUpdatedAt,
+                deletedAt: deletedAt,
+                dirty: dirty,
+                isNew: isNew,
+                lastDeviceId: lastDeviceId,
+                rowid: rowid,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) => (
+                  e.readTable<$NoteInksTable, NoteInk>(table),
+                  BaseReferences<_$AppDatabase, $NoteInksTable, NoteInk>(
+                    db,
+                    table,
+                    e,
+                  ),
+                ),
+              )
+              .toList(),
+          prefetchHooksCallback: null,
+        ),
+      );
+}
+
+typedef $$NoteInksTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $NoteInksTable,
+      NoteInk,
+      $$NoteInksTableFilterComposer,
+      $$NoteInksTableOrderingComposer,
+      $$NoteInksTableAnnotationComposer,
+      $$NoteInksTableCreateCompanionBuilder,
+      $$NoteInksTableUpdateCompanionBuilder,
+      (NoteInk, BaseReferences<_$AppDatabase, $NoteInksTable, NoteInk>),
+      NoteInk,
+      PrefetchHooks Function()
+    >;
 typedef $$SyncMetaEntriesTableCreateCompanionBuilder =
     SyncMetaEntriesCompanion Function({
       required String key,
@@ -3502,6 +4637,8 @@ class $AppDatabaseManager {
       $$FoldersTableTableManager(_db, _db.folders);
   $$NoteImagesTableTableManager get noteImages =>
       $$NoteImagesTableTableManager(_db, _db.noteImages);
+  $$NoteInksTableTableManager get noteInks =>
+      $$NoteInksTableTableManager(_db, _db.noteInks);
   $$SyncMetaEntriesTableTableManager get syncMetaEntries =>
       $$SyncMetaEntriesTableTableManager(_db, _db.syncMetaEntries);
 }

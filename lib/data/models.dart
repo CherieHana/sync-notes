@@ -181,3 +181,58 @@ class RemoteImage {
   @override
   String toString() => 'RemoteImage($id, $storagePath, $byteSize bytes)';
 }
+
+/// 服务端一块手写画布的快照。
+///
+/// 笔迹存成归一化坐标（0~1，相对画布），手机和电脑显示尺寸差很多也不会错位。
+class RemoteInk {
+  const RemoteInk({
+    required this.id,
+    required this.strokes,
+    required this.canvasWidth,
+    required this.canvasHeight,
+    required this.version,
+    required this.createdAt,
+    required this.updatedAt,
+    this.deletedAt,
+    this.lastDeviceId,
+  });
+
+  final String id;
+
+  /// 笔迹数据，JSON 数组字符串。见 `InkStroke`。
+  final String strokes;
+
+  /// 画布的原始比例，只用来算显示尺寸，笔迹本身是归一化的。
+  final int canvasWidth;
+  final int canvasHeight;
+
+  final int version;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final DateTime? deletedAt;
+  final String? lastDeviceId;
+
+  bool get isDeleted => deletedAt != null;
+
+  double get aspectRatio => canvasHeight <= 0
+      ? 3 / 4
+      : canvasWidth / canvasHeight;
+
+  factory RemoteInk.fromJson(Map<String, dynamic> json) {
+    return RemoteInk(
+      id: json['id'] as String,
+      strokes: (json['strokes'] as String?) ?? '[]',
+      canvasWidth: (json['canvas_width'] as num?)?.toInt() ?? 1000,
+      canvasHeight: (json['canvas_height'] as num?)?.toInt() ?? 1400,
+      version: (json['version'] as num).toInt(),
+      createdAt: parseServerTime(json['created_at'])!,
+      updatedAt: parseServerTime(json['updated_at'])!,
+      deletedAt: parseServerTime(json['deleted_at']),
+      lastDeviceId: json['last_device_id'] as String?,
+    );
+  }
+
+  @override
+  String toString() => 'RemoteInk($id, v$version, deleted=$isDeleted)';
+}

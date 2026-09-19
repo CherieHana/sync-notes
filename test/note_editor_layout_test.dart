@@ -64,7 +64,7 @@ void main() {
   testWidgets('图片会撑开所在行，不会盖住上面的文字', (tester) async {
     await pumpEditor(tester, '第一行\n[[img:$imageId]]\n第二行');
 
-    final image = tester.getRect(find.byKey(const ValueKey(imageId)));
+    final image = tester.getRect(find.byKey(ValueKey('img-$imageId')));
     final field = tester.getRect(find.byType(TextField));
 
     expect(
@@ -78,7 +78,7 @@ void main() {
   testWidgets('图片后面的文字排在图片下方，不会被盖住', (tester) async {
     await pumpEditor(tester, '[[img:$imageId]]\n后面的文字');
 
-    final image = tester.getRect(find.byKey(const ValueKey(imageId)));
+    final image = tester.getRect(find.byKey(ValueKey('img-$imageId')));
     final field = tester.getRect(find.byType(TextField));
 
     // 占位框从输入框顶部开始，后面的文字要被推到它下面去。

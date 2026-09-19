@@ -17,6 +17,7 @@ class DriftLocalStore implements LocalStore {
   static const _keyNotesPulledAt = 'last_pulled_at';
   static const _keyFoldersPulledAt = 'last_pulled_folders_at';
   static const _keyImagesPulledAt = 'last_pulled_images_at';
+  static const _keyInksPulledAt = 'last_pulled_inks_at';
 
   final AppDatabase _db;
   String? _cachedDeviceId;
@@ -264,6 +265,137 @@ class DriftLocalStore implements LocalStore {
   }
 
   // ---------------------------------------------------------------------
+  // 手写画布
+  // ---------------------------------------------------------------------
+
+  @override
+  Future<LocalInk?> findInkById(String id) async {
+    final row = await (_db.select(
+      _db.noteInks,
+    )..where((t) => t.id.equals(id))).getSingleOrNull();
+    return row == null ? null : _toLocalInk(row);
+  }
+
+  @override
+  Future<List<LocalInk>> pendingInks() async {
+    final query = _db.select(_db.noteInks)
+      ..where((t) => t.dirty.equals(true))
+      ..orderBy([(t) => OrderingTerm.asc(t.updatedAt)]);
+    final rows = await query.get();
+    return rows.map(_toLocalInk).toList();
+  }
+
+  @override
+  Future<List<LocalInk>> allInks() async {
+    final query = _db.select(_db.noteInks)
+      ..where((t) => t.deletedAt.isNull());
+    final rows = await query.get();
+    return rows.map(_toLocalInk).toList();
+  }
+
+  @override
+  Future<List<LocalInk>> deletedInks() async {
+    final query = _db.select(_db.noteInks)
+      ..where((t) => t.deletedAt.isNotNull());
+    final rows = await query.get();
+    return rows.map(_toLocalInk).toList();
+  }
+
+  @override
+  Future<void> createInk(LocalInk ink) async {
+    await _db
+        .into(_db.noteInks)
+        .insert(
+          NoteInksCompanion.insert(
+            id: ink.id,
+            strokes: Value(ink.strokes),
+            canvasWidth: Value(ink.canvasWidth),
+            canvasHeight: Value(ink.canvasHeight),
+            version: Value(ink.version),
+            baseVersion: Value(ink.baseVersion),
+            createdAt: ink.createdAt,
+            updatedAt: ink.updatedAt,
+            serverUpdatedAt: Value(ink.serverUpdatedAt),
+            deletedAt: Value(ink.deletedAt),
+            dirty: Value(ink.dirty),
+            isNew: Value(ink.isNew),
+            lastDeviceId: Value(ink.lastDeviceId),
+          ),
+        );
+  }
+
+  @override
+  Future<void> updateInkStrokes({
+    required String id,
+    required String strokes,
+    required DateTime now,
+  }) async {
+    await (_db.update(_db.noteInks)..where((t) => t.id.equals(id))).write(
+      NoteInksCompanion(
+        strokes: Value(strokes),
+        updatedAt: Value(now),
+        dirty: const Value(true),
+      ),
+    );
+  }
+
+  @override
+  Future<void> softDeleteInk({
+    required String id,
+    required DateTime now,
+  }) async {
+    await (_db.update(_db.noteInks)..where((t) => t.id.equals(id))).write(
+      NoteInksCompanion(
+        deletedAt: Value(now),
+        updatedAt: Value(now),
+        dirty: const Value(true),
+      ),
+    );
+  }
+
+  @override
+  Future<DateTime?> getInksPulledAt() => _getTime(_keyInksPulledAt);
+
+  @override
+  Future<void> setInksPulledAt(DateTime value) =>
+      _setTime(_keyInksPulledAt, value);
+
+  @override
+  Future<void> applyRemoteInk(RemoteInk ink) async {
+    await _db.transaction(() async {
+      final existing = await (_db.select(
+        _db.noteInks,
+      )..where((t) => t.id.equals(ink.id))).getSingleOrNull();
+      if (existing != null && ink.version <= existing.baseVersion) return;
+
+      await _db
+          .into(_db.noteInks)
+          .insertOnConflictUpdate(
+            NoteInksCompanion(
+              id: Value(ink.id),
+              strokes: Value(ink.strokes),
+              canvasWidth: Value(ink.canvasWidth),
+              canvasHeight: Value(ink.canvasHeight),
+              version: Value(ink.version),
+              baseVersion: Value(ink.version),
+              createdAt: Value(ink.createdAt),
+              updatedAt: Value(ink.updatedAt),
+              serverUpdatedAt: Value(ink.updatedAt),
+              deletedAt: Value(ink.deletedAt),
+              dirty: const Value(false),
+              isNew: const Value(false),
+              lastDeviceId: Value(ink.lastDeviceId),
+            ),
+          );
+    });
+  }
+
+  @override
+  Future<void> hardDeleteInk(String id) async {
+    await (_db.delete(_db.noteInks)..where((t) => t.id.equals(id))).go();
+  }
+
+  // ---------------------------------------------------------------------
   // 待推送
   // ---------------------------------------------------------------------
 
@@ -375,7 +507,8 @@ class DriftLocalStore implements LocalStore {
 
     return await countDirty(_db.notes, _db.notes.dirty) +
         await countDirty(_db.folders, _db.folders.dirty) +
-        await countDirty(_db.noteImages, _db.noteImages.dirty);
+        await countDirty(_db.noteImages, _db.noteImages.dirty) +
+        await countDirty(_db.noteInks, _db.noteInks.dirty);
   }
 
   // ---------------------------------------------------------------------
@@ -586,5 +719,21 @@ class DriftLocalStore implements LocalStore {
     updatedAt: row.updatedAt,
     deletedAt: row.deletedAt,
     dirty: row.dirty,
+  );
+
+  LocalInk _toLocalInk(NoteInk row) => LocalInk(
+    id: row.id,
+    strokes: row.strokes,
+    canvasWidth: row.canvasWidth,
+    canvasHeight: row.canvasHeight,
+    version: row.version,
+    baseVersion: row.baseVersion,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    serverUpdatedAt: row.serverUpdatedAt,
+    deletedAt: row.deletedAt,
+    dirty: row.dirty,
+    isNew: row.isNew,
+    lastDeviceId: row.lastDeviceId,
   );
 }

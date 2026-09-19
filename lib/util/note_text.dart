@@ -1,14 +1,25 @@
-/// 图片在正文里的表示：单独占一行 `[[img:<uuid>]]`。
+/// 正文里内嵌元素的标记。
 ///
-/// 用自定义标记而不是 markdown 的 `![]()`，是为了让「整行就是一个图片」
+/// `[[img:<uuid>]]` 是插入的图片，`[[ink:<uuid>]]` 是一块手写画布。
+/// 用自定义标记而不是 markdown 语法，是为了让「这里就是一个内嵌块」
 /// 这件事没有歧义——导入的 markdown 里也可能有图片语法，混在一起会认错。
-final RegExp imageTokenPattern = RegExp(r'\[\[img:([0-9a-fA-F-]{36})\]\]');
+final RegExp embedTokenPattern = RegExp(r'\[\[(img|ink):([0-9a-fA-F-]{36})\]\]');
 
 /// 正文里出现过的全部图片 id，用于回收没人引用的图片。
-Iterable<String> imageIdsIn(String body) =>
-    imageTokenPattern.allMatches(body).map((m) => m.group(1)!);
+Iterable<String> imageIdsIn(String body) => embedTokenPattern
+    .allMatches(body)
+    .where((m) => m.group(1) == 'img')
+    .map((m) => m.group(2)!);
+
+/// 正文里出现过的全部手写画布 id，同样用于回收。
+Iterable<String> inkIdsIn(String body) => embedTokenPattern
+    .allMatches(body)
+    .where((m) => m.group(1) == 'ink')
+    .map((m) => m.group(2)!);
 
 String imageMarker(String id) => '[[img:$id]]';
+
+String inkMarker(String id) => '[[ink:$id]]';
 
 /// 纯文本笔记的派生信息：标题取第一段非空内容，其余作摘要。
 String noteTitle(String body) {

@@ -9,6 +9,7 @@ class FakeLocalStore implements LocalStore {
   final Map<String, LocalNote> notes = {};
   final Map<String, LocalFolder> folders = {};
   final Map<String, LocalImage> images = {};
+  final Map<String, LocalInk> inks = {};
 
   /// 图片文件本体，键是图片 id。
   final Map<String, List<int>> files = {};
@@ -19,6 +20,7 @@ class FakeLocalStore implements LocalStore {
   DateTime? notesPulledAt;
   DateTime? foldersPulledAt;
   DateTime? imagesPulledAt;
+  DateTime? inksPulledAt;
   String device = 'test-device';
 
   // drift 的 watch() 会在数据变化时重新推送，这里用两个广播流模拟同样的行为，
@@ -101,10 +103,82 @@ class FakeLocalStore implements LocalStore {
   Future<LocalImage?> findImageById(String id) async => images[id];
 
   @override
+  Future<LocalInk?> findInkById(String id) async => inks[id];
+
+  @override
+  Future<List<LocalInk>> pendingInks() async {
+    final list = inks.values.where((i) => i.dirty).toList()
+      ..sort((a, b) => a.updatedAt.compareTo(b.updatedAt));
+    return list;
+  }
+
+  @override
+  Future<List<LocalInk>> allInks() async =>
+      inks.values.where((i) => !i.isDeleted).toList();
+
+  @override
+  Future<List<LocalInk>> deletedInks() async =>
+      inks.values.where((i) => i.isDeleted).toList();
+
+  @override
+  Future<void> createInk(LocalInk ink) async => inks[ink.id] = ink;
+
+  @override
+  Future<void> updateInkStrokes({
+    required String id,
+    required String strokes,
+    required DateTime now,
+  }) async {
+    final ink = inks[id]!;
+    inks[id] = ink.copyWith(strokes: strokes, updatedAt: now, dirty: true);
+  }
+
+  @override
+  Future<void> softDeleteInk({
+    required String id,
+    required DateTime now,
+  }) async {
+    final ink = inks[id]!;
+    inks[id] = ink.copyWith(deletedAt: now, updatedAt: now, dirty: true);
+  }
+
+  @override
+  Future<DateTime?> getInksPulledAt() async => inksPulledAt;
+
+  @override
+  Future<void> setInksPulledAt(DateTime value) async => inksPulledAt = value;
+
+  @override
+  Future<void> applyRemoteInk(RemoteInk ink) async {
+    final existing = inks[ink.id];
+    if (existing != null && ink.version <= existing.baseVersion) return;
+
+    inks[ink.id] = LocalInk(
+      id: ink.id,
+      strokes: ink.strokes,
+      canvasWidth: ink.canvasWidth,
+      canvasHeight: ink.canvasHeight,
+      version: ink.version,
+      baseVersion: ink.version,
+      createdAt: ink.createdAt,
+      updatedAt: ink.updatedAt,
+      serverUpdatedAt: ink.updatedAt,
+      deletedAt: ink.deletedAt,
+      dirty: false,
+      isNew: false,
+      lastDeviceId: ink.lastDeviceId,
+    );
+  }
+
+  @override
+  Future<void> hardDeleteInk(String id) async => inks.remove(id);
+
+  @override
   Future<int> pendingCount() async =>
       notes.values.where((n) => n.dirty).length +
       folders.values.where((f) => f.dirty).length +
-      images.values.where((i) => i.dirty).length;
+      images.values.where((i) => i.dirty).length +
+      inks.values.where((i) => i.dirty).length;
 
   @override
   Future<DateTime?> getLastPulledAt() async => notesPulledAt;
@@ -360,6 +434,7 @@ class FakeRemoteApi implements RemoteApi {
   final Map<String, RemoteNote> notes = {};
   final Map<String, RemoteFolder> folders = {};
   final Map<String, RemoteImage> images = {};
+  final Map<String, RemoteInk> inks = {};
 
   /// 存储桶里的对象，键是 storage_path。
   final Map<String, List<int>> storage = {};
@@ -374,6 +449,8 @@ class FakeRemoteApi implements RemoteApi {
   void seed(RemoteNote note) => notes[note.id] = note;
 
   void seedFolder(RemoteFolder folder) => folders[folder.id] = folder;
+
+  void seedInk(RemoteInk ink) => inks[ink.id] = ink;
 
   void _guard() {
     if (offline) throw const RemoteApiException('模拟断网');
@@ -575,6 +652,73 @@ class FakeRemoteApi implements RemoteApi {
   }
 
   @override
+  Future<List<RemoteInk>> fetchInksChangedSince(DateTime? since) async {
+    _guard();
+    final list = inks.values.where((i) => _changed(i.updatedAt, since)).toList()
+      ..sort((a, b) => a.updatedAt.compareTo(b.updatedAt));
+    return list;
+  }
+
+  @override
+  Future<RemoteInk?> fetchInkById(String id) async {
+    _guard();
+    return inks[id];
+  }
+
+  @override
+  Future<RemoteInk> insertInk({
+    required String id,
+    required String strokes,
+    required int canvasWidth,
+    required int canvasHeight,
+    String? lastDeviceId,
+  }) async {
+    _guard();
+    final existing = inks[id];
+    final ink = RemoteInk(
+      id: id,
+      strokes: strokes,
+      canvasWidth: canvasWidth,
+      canvasHeight: canvasHeight,
+      version: existing?.version ?? 1,
+      createdAt: existing?.createdAt ?? _tick(),
+      updatedAt: _tick(),
+      deletedAt: existing?.deletedAt,
+      lastDeviceId: lastDeviceId,
+    );
+    inks[id] = ink;
+    return ink;
+  }
+
+  @override
+  Future<RemoteInk?> updateInkIfVersion({
+    required String id,
+    required String strokes,
+    required int expectedVersion,
+    required String lastDeviceId,
+    DateTime? deletedAt,
+  }) async {
+    _guard();
+    final existing = inks[id];
+    if (existing == null) return null;
+    if (existing.version != expectedVersion) return null;
+
+    final ink = RemoteInk(
+      id: id,
+      strokes: strokes,
+      canvasWidth: existing.canvasWidth,
+      canvasHeight: existing.canvasHeight,
+      version: expectedVersion + 1,
+      createdAt: existing.createdAt,
+      updatedAt: _tick(),
+      deletedAt: deletedAt,
+      lastDeviceId: lastDeviceId,
+    );
+    inks[id] = ink;
+    return ink;
+  }
+
+  @override
   Stream<RemoteNote> watchChanges() => const Stream.empty();
 
   @override
@@ -727,5 +871,49 @@ LocalImage localImage({
     updatedAt: at,
     deletedAt: deletedAt,
     dirty: dirty,
+  );
+}
+
+RemoteInk remoteInk({
+  required String id,
+  String strokes = '[]',
+  int version = 1,
+  DateTime? updatedAt,
+  DateTime? deletedAt,
+}) {
+  final at = updatedAt ?? DateTime.utc(2026, 1, 1);
+  return RemoteInk(
+    id: id,
+    strokes: strokes,
+    canvasWidth: 1000,
+    canvasHeight: 1400,
+    version: version,
+    createdAt: at,
+    updatedAt: at,
+    deletedAt: deletedAt,
+  );
+}
+
+LocalInk localInk({
+  required String id,
+  String strokes = '[]',
+  int version = 1,
+  int baseVersion = 0,
+  DateTime? createdAt,
+  DateTime? deletedAt,
+  bool dirty = true,
+  bool isNew = false,
+}) {
+  final at = createdAt ?? DateTime.utc(2026, 1, 1);
+  return LocalInk(
+    id: id,
+    strokes: strokes,
+    version: version,
+    baseVersion: baseVersion,
+    createdAt: at,
+    updatedAt: at,
+    deletedAt: deletedAt,
+    dirty: dirty,
+    isNew: isNew,
   );
 }

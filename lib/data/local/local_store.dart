@@ -211,6 +211,84 @@ class LocalImage {
       'LocalImage($id, $storagePath, $byteSize bytes, deleted=$isDeleted)';
 }
 
+/// 本地库里的一块手写画布。
+///
+/// 同步状态的含义与目录一致：笔迹是可以反复修改的，所以带版本号走乐观锁；
+/// 撞车时以本地这次改动为准——一幅画没法自动合并，也不值得为它弹冲突副本。
+class LocalInk {
+  const LocalInk({
+    required this.id,
+    required this.strokes,
+    required this.version,
+    required this.baseVersion,
+    required this.createdAt,
+    required this.updatedAt,
+    this.canvasWidth = 1000,
+    this.canvasHeight = 1400,
+    this.serverUpdatedAt,
+    this.deletedAt,
+    this.dirty = true,
+    this.isNew = false,
+    this.lastDeviceId,
+  });
+
+  final String id;
+
+  /// 笔迹数据，JSON 字符串。
+  final String strokes;
+
+  final int canvasWidth;
+  final int canvasHeight;
+  final int version;
+  final int baseVersion;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+  final DateTime? serverUpdatedAt;
+  final DateTime? deletedAt;
+  final bool dirty;
+  final bool isNew;
+  final String? lastDeviceId;
+
+  bool get isDeleted => deletedAt != null;
+
+  double get aspectRatio =>
+      canvasHeight <= 0 ? 3 / 4 : canvasWidth / canvasHeight;
+
+  LocalInk copyWith({
+    String? strokes,
+    int? version,
+    int? baseVersion,
+    DateTime? updatedAt,
+    DateTime? serverUpdatedAt,
+    DateTime? deletedAt,
+    bool clearDeletedAt = false,
+    bool? dirty,
+    bool? isNew,
+    String? lastDeviceId,
+  }) {
+    return LocalInk(
+      id: id,
+      strokes: strokes ?? this.strokes,
+      canvasWidth: canvasWidth,
+      canvasHeight: canvasHeight,
+      version: version ?? this.version,
+      baseVersion: baseVersion ?? this.baseVersion,
+      createdAt: createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      serverUpdatedAt: serverUpdatedAt ?? this.serverUpdatedAt,
+      deletedAt: clearDeletedAt ? null : (deletedAt ?? this.deletedAt),
+      dirty: dirty ?? this.dirty,
+      isNew: isNew ?? this.isNew,
+      lastDeviceId: lastDeviceId ?? this.lastDeviceId,
+    );
+  }
+
+  @override
+  String toString() =>
+      'LocalInk($id, v$version/base$baseVersion, dirty=$dirty, '
+      'isNew=$isNew, deleted=$isDeleted)';
+}
+
 /// 本地存储的抽象。
 ///
 /// 同步引擎只依赖这个接口，真实实现是 SQLite（drift），
@@ -305,6 +383,35 @@ abstract class LocalStore {
   Future<List<LocalImage>> deletedImages();
 
   Future<LocalImage?> findImageById(String id);
+
+  // --- 手写画布 ---
+
+  Future<LocalInk?> findInkById(String id);
+
+  Future<List<LocalInk>> pendingInks();
+
+  /// 全部未删除的画布，供清理无人引用的笔迹使用。
+  Future<List<LocalInk>> allInks();
+
+  Future<List<LocalInk>> deletedInks();
+
+  Future<void> createInk(LocalInk ink);
+
+  Future<void> updateInkStrokes({
+    required String id,
+    required String strokes,
+    required DateTime now,
+  });
+
+  Future<void> softDeleteInk({required String id, required DateTime now});
+
+  Future<DateTime?> getInksPulledAt();
+
+  Future<void> setInksPulledAt(DateTime value);
+
+  Future<void> applyRemoteInk(RemoteInk ink);
+
+  Future<void> hardDeleteInk(String id);
 
   Future<int> pendingCount();
 

@@ -158,7 +158,54 @@ class _NotesListPageState extends State<NotesListPage> {
       ],
     );
     if (!mounted || action == null) return;
+    await _runNoteAction(action, note, folders);
+  }
 
+  /// 触屏上长按笔记弹出的菜单。
+  ///
+  /// 原来长按是直接跳到「移动到…」，没有删除这一项——想删笔记在手机上
+  /// 就只能左滑，很多人根本不知道。改成和电脑右键一样的两个选项。
+  Future<void> _showNoteActions(
+    LocalNote note,
+    List<LocalFolder> folders,
+  ) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            ListTile(
+              title: Text(
+                noteTitle(note.body),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.drive_file_move_outlined),
+              title: const Text('移动到…'),
+              onTap: () => Navigator.of(context).pop('move'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: const Text('删除'),
+              onTap: () => Navigator.of(context).pop('delete'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted || action == null) return;
+    await _runNoteAction(action, note, folders);
+  }
+
+  Future<void> _runNoteAction(
+    String action,
+    LocalNote note,
+    List<LocalFolder> folders,
+  ) async {
     if (action == 'move') {
       await _moveNote(note, folders);
     } else if (action == 'delete') {
@@ -220,10 +267,23 @@ class _NotesListPageState extends State<NotesListPage> {
         ),
       ),
     );
-    if (!mounted) return;
+      if (!mounted) return;
 
-    if (action == 'rename') {
-      final name = await _askFolderName(title: '重命名目录', initial: folder.name);
+      if (action == 'rename') {
+        await _renameFolder(folder);
+        return;
+      }
+
+      if (action == 'delete') {
+        await _deleteFolder(folder);
+      }
+    }
+
+    Future<void> _renameFolder(LocalFolder folder) async {
+      final name = await _askFolderName(
+        title: '重命名目录',
+        initial: folder.name,
+      );
       if (name == null || !mounted) return;
       await _services.local.renameFolder(
         id: folder.id,
@@ -231,10 +291,9 @@ class _NotesListPageState extends State<NotesListPage> {
         now: DateTime.now(),
       );
       unawaited(_services.sync.sync());
-      return;
     }
 
-    if (action == 'delete') {
+    Future<void> _deleteFolder(LocalFolder folder) async {
       final confirmed = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
@@ -261,7 +320,58 @@ class _NotesListPageState extends State<NotesListPage> {
       if (mounted && _tab == folder.id) setState(() => _tab = _allTab);
       unawaited(_services.sync.sync());
     }
-  }
+
+    /// 管理目录：改名和删除都摆在一个列表里，每行两个按钮。
+    ///
+    /// 原来这两个操作只挂在「长按目录标签」上——两个平台都得按半秒，
+    /// 电脑上尤其别扭，等于没有入口。
+    Future<void> _manageFolders() async {
+      final services = _services;
+      await showModalBottomSheet<void>(
+        context: context,
+        builder: (sheetContext) => SafeArea(
+          child: StreamBuilder<List<LocalFolder>>(
+            stream: services.local.watchVisibleFolders(),
+            builder: (context, snapshot) {
+              final folders = snapshot.data ?? const <LocalFolder>[];
+              return ListView(
+                shrinkWrap: true,
+                children: [
+                  const ListTile(
+                    title: Text(
+                      '管理目录',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  if (folders.isEmpty)
+                    const ListTile(title: Text('还没有目录，先用「新建目录」建一个。')),
+                  for (final folder in folders)
+                    ListTile(
+                      leading: const Icon(Icons.folder_outlined),
+                      title: Text(folder.name),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            tooltip: '重命名',
+                            icon: const Icon(Icons.edit_outlined),
+                            onPressed: () => unawaited(_renameFolder(folder)),
+                          ),
+                          IconButton(
+                            tooltip: '删除',
+                            icon: const Icon(Icons.delete_outline),
+                            onPressed: () => unawaited(_deleteFolder(folder)),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              );
+            },
+          ),
+        ),
+      );
+    }
 
   Future<String?> _askFolderName({required String title, String? initial}) {
     return TextPromptDialog.show(
@@ -404,6 +514,8 @@ class _NotesListPageState extends State<NotesListPage> {
               switch (value) {
                 case 'folder':
                   unawaited(_createFolder());
+                case 'manageFolders':
+                  unawaited(_manageFolders());
                 case 'import':
                   unawaited(_importFiles());
                 case 'signOut':
@@ -421,6 +533,7 @@ class _NotesListPageState extends State<NotesListPage> {
                 ),
               const PopupMenuDivider(),
               const PopupMenuItem(value: 'folder', child: Text('新建目录')),
+              const PopupMenuItem(value: 'manageFolders', child: Text('管理目录')),
               const PopupMenuItem(value: 'import', child: Text('导入文件')),
               const PopupMenuDivider(),
               const PopupMenuItem(value: 'signOut', child: Text('退出登录')),
@@ -578,7 +691,7 @@ class _NotesListPageState extends State<NotesListPage> {
               style: Theme.of(context).textTheme.bodySmall,
             ),
             onTap: () => _open(note),
-            onLongPress: () => unawaited(_moveNote(note, folders)),
+            onLongPress: () => unawaited(_showNoteActions(note, folders)),
             ),
           ),
         );

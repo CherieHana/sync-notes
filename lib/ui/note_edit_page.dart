@@ -12,17 +12,19 @@ import '../services/image_pipeline.dart';
 import '../services/clipboard_image.dart';
 import '../services/external_drop.dart';
 import '../services/file_import.dart';
+import '../services/ink_strokes.dart';
 import '../services/note_lock.dart';
 import '../services/undo_stack.dart';
+import 'ink_canvas_page.dart';
 import 'note_unlock_view.dart';
 import 'widgets/folder_picker.dart';
 import 'widgets/inline_note_controller.dart';
 import 'widgets/text_prompt_dialog.dart';
 
-/// 撤回用的快照：编辑态文本加当时对应的图片顺序。
+/// 撤回用的快照：编辑态文本加当时对应的内嵌块顺序。
 ///
-/// 两张都要存——只知道文本的话，撤回一次「删掉图片」的操作就找不回那张图了。
-typedef _Snapshot = ({String display, List<String> ids});
+/// 两样都要存——只知道文本的话，撤回一次「删掉图片」的操作就找不回那张图了。
+typedef _Snapshot = ({String display, List<EmbedRef> embeds});
 
 /// 编辑页。全屏纯文本，停止输入 0.8 秒自动落库，返回时再补一次。
 ///
@@ -69,11 +71,14 @@ class _NoteEditPageState extends State<NoteEditPage> {
   bool _needsUnlock = false;
 
   String _lastDisplay = '';
-  List<String> _imageIds = const [];
+  List<EmbedRef> _embeds = const [];
   String _lastSavedBody = '';
 
   /// 图片 id → 渲染信息（本机路径与宽高比）。
   final Map<String, InlineImageInfo> _imageInfo = {};
+
+  /// 手写画布 id → 笔迹与比例。
+  final Map<String, InlineInkInfo> _inkInfo = {};
 
   @override
   void didChangeDependencies() {
@@ -119,19 +124,21 @@ class _NoteEditPageState extends State<NoteEditPage> {
     if (locked) return;
 
     final display = InlineNoteController.toDisplay(note.body);
-    final controller =
-        _controller ??
-        (InlineNoteController(
-          idsOf: () => _imageIds,
-          imageInfoOf: _imageInfoOf,
-        )..addListener(_onChanged));
-    _controller = controller;
-    _applySnapshot(
-      (display: display.display, ids: display.ids),
-      moveCursorToEnd: true,
-    );
-    _lastSavedBody = note.body;
-    unawaited(_resolveImageInfo(display.ids));
+      final controller =
+          _controller ??
+          (InlineNoteController(
+            embedsOf: () => _embeds,
+            imageInfoOf: _imageInfoOf,
+            inkInfoOf: _inkInfoOf,
+            onTapInk: (id) => unawaited(_openInkCanvas(id)),
+          )..addListener(_onChanged));
+      _controller = controller;
+      _applySnapshot(
+        (display: display.display, embeds: display.embeds),
+        moveCursorToEnd: true,
+      );
+      _lastSavedBody = note.body;
+      unawaited(_resolveEmbeds(display.embeds));
   }
 
   /// 把一份快照写进编辑框，同时同步内部记录。
@@ -149,9 +156,9 @@ class _NoteEditPageState extends State<NoteEditPage> {
               ),
       ),
     );
-    _suppressChanges = false;
-    _lastDisplay = snapshot.display;
-    _imageIds = snapshot.ids;
+      _suppressChanges = false;
+      _lastDisplay = snapshot.display;
+      _embeds = snapshot.embeds;
   }
 
   void _onChanged() {
@@ -162,16 +169,16 @@ class _NoteEditPageState extends State<NoteEditPage> {
     final display = controller.text;
     if (display == _lastDisplay) return;
 
-    final snapshot = (display: _lastDisplay, ids: _imageIds);
-    final nextIds = InlineNoteController.idsAfterEdit(
-      oldDisplay: _lastDisplay,
-      newDisplay: display,
-      ids: _imageIds,
-    );
+      final snapshot = (display: _lastDisplay, embeds: _embeds);
+      final nextEmbeds = InlineNoteController.embedsAfterEdit(
+        oldDisplay: _lastDisplay,
+        newDisplay: display,
+        embeds: _embeds,
+      );
 
-    _undo.record(snapshot);
-    _lastDisplay = display;
-    _imageIds = nextIds;
+      _undo.record(snapshot);
+      _lastDisplay = display;
+      _embeds = nextEmbeds;
 
     _debounce?.cancel();
     _debounce = Timer(_autosaveDelay, () => unawaited(_save()));
@@ -184,7 +191,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
     if (services == null || note == null || controller == null) return;
     if (_needsUnlock) return;
 
-    final body = InlineNoteController.toDocument(controller.text, _imageIds);
+      final body = InlineNoteController.toDocument(controller.text, _embeds);
     if (body == _lastSavedBody) return;
     _lastSavedBody = body;
 
@@ -220,9 +227,9 @@ class _NoteEditPageState extends State<NoteEditPage> {
   void _undoStep() {
     final previous = _undo.undo();
     if (previous == null) return;
-    setState(() => _applySnapshot(previous));
-    unawaited(_save());
-    unawaited(_resolveImageInfo(previous.ids));
+      setState(() => _applySnapshot(previous));
+      unawaited(_save());
+      unawaited(_resolveEmbeds(previous.embeds));
   }
 
   // ---------------------------------------------------------------------
@@ -232,30 +239,48 @@ class _NoteEditPageState extends State<NoteEditPage> {
   InlineImageInfo _imageInfoOf(String imageId) =>
       _imageInfo[imageId] ?? const InlineImageInfo();
 
-  Future<void> _resolveImageInfo(List<String> ids) async {
+  InlineInkInfo _inkInfoOf(String inkId) =>
+      _inkInfo[inkId] ?? const InlineInkInfo();
+
+  /// 把内嵌块需要的数据准备好：图片要本机路径，手写要笔迹。
+  /// 还没同步下来的先留空，靠 [_scheduleImageRetry] 过几秒重试。
+  Future<void> _resolveEmbeds(List<EmbedRef> embeds) async {
     final services = _services;
     if (services == null) return;
 
     var changed = false;
-    for (final id in ids) {
-      if (_imageInfo[id]?.path != null) continue;
-
-      final exists = await services.local.imageFileExists(id);
-      final path = exists ? await services.local.imageFilePath(id) : null;
-      final row = await services.local.findImageById(id);
-      final width = row?.width;
-      final height = row?.height;
-      final info = InlineImageInfo(
-        path: path,
-        // 按原始比例排版。固定宽度会把窄图压扁、让宽图撑破一行。
-        aspectRatio: (width != null && height != null && height > 0)
-            ? width / height
-            : 4 / 3,
-      );
-      if (_imageInfo[id]?.path != info.path ||
-          _imageInfo[id]?.aspectRatio != info.aspectRatio) {
-        _imageInfo[id] = info;
-        changed = true;
+    for (final embed in embeds) {
+      switch (embed.kind) {
+        case EmbedKind.image:
+          if (_imageInfo[embed.id]?.path != null) continue;
+          final exists = await services.local.imageFileExists(embed.id);
+          final path = exists
+              ? await services.local.imageFilePath(embed.id)
+              : null;
+          final row = await services.local.findImageById(embed.id);
+          final width = row?.width;
+          final height = row?.height;
+          final info = InlineImageInfo(
+            path: path,
+            // 按原始比例排版。固定宽度会把窄图压扁、让宽图撑破一行。
+            aspectRatio: (width != null && height != null && height > 0)
+                ? width / height
+                : 4 / 3,
+          );
+          if (_imageInfo[embed.id]?.path != info.path ||
+              _imageInfo[embed.id]?.aspectRatio != info.aspectRatio) {
+            _imageInfo[embed.id] = info;
+            changed = true;
+          }
+        case EmbedKind.ink:
+          if (_inkInfo[embed.id]?.strokes != null) continue;
+          final ink = await services.local.findInkById(embed.id);
+          if (ink == null) continue;
+          _inkInfo[embed.id] = InlineInkInfo(
+            strokes: decodeInkStrokes(ink.strokes),
+            aspectRatio: ink.aspectRatio,
+          );
+          changed = true;
       }
     }
     if (changed && mounted) setState(() {});
@@ -264,10 +289,14 @@ class _NoteEditPageState extends State<NoteEditPage> {
   /// 有图片还没下回来时，隔几秒重试一次，等同步把文件拉回来。
   void _scheduleImageRetry() {
     _imageRetry?.cancel();
-    if (_imageInfo.values.every((info) => info.path != null)) return;
+    final imagesReady = _imageInfo.values.every((info) => info.path != null);
+    final inksReady = _inkInfo.values.every((info) => info.strokes != null);
+    if (imagesReady && inksReady) return;
     _imageRetry = Timer(_imageRetryDelay, () {
       if (!mounted) return;
-      unawaited(_resolveImageInfo(_imageIds).then((_) => _scheduleImageRetry()));
+      unawaited(
+        _resolveEmbeds(_embeds).then((_) => _scheduleImageRetry()),
+      );
     });
   }
 
@@ -324,7 +353,69 @@ class _NoteEditPageState extends State<NoteEditPage> {
         updatedAt: now,
       ),
     );
-    _appendImageMarker(id);
+    _appendEmbed(id, EmbedKind.image);
+    unawaited(services.sync.sync());
+  }
+
+  // ---------------------------------------------------------------------
+  // 手写画布
+  // ---------------------------------------------------------------------
+
+  /// 新建一块手写画布：先进画布页写，写完再插进正文。
+  Future<void> _insertInk() async {
+    final services = _services;
+    if (services == null) return;
+
+    final strokes = await Navigator.of(context).push<List<InkStroke>>(
+      MaterialPageRoute(
+        builder: (_) => const InkCanvasPage(initialStrokes: []),
+      ),
+    );
+    if (strokes == null || !mounted) return;
+
+    final id = const Uuid().v4();
+    final now = DateTime.now();
+    await services.local.createInk(
+      LocalInk(
+        id: id,
+        strokes: encodeInkStrokes(strokes),
+        version: 1,
+        baseVersion: 0,
+        createdAt: now,
+        updatedAt: now,
+      ),
+    );
+    _appendEmbed(id, EmbedKind.ink);
+    unawaited(services.sync.sync());
+  }
+
+  /// 点正文里的手写块，打开全屏继续写。
+  Future<void> _openInkCanvas(String inkId) async {
+    final services = _services;
+    if (services == null) return;
+
+    final ink = await services.local.findInkById(inkId);
+    if (ink == null || !mounted) return;
+
+    final strokes = await Navigator.of(context).push<List<InkStroke>>(
+      MaterialPageRoute(
+        builder: (_) => InkCanvasPage(
+          initialStrokes: decodeInkStrokes(ink.strokes),
+        ),
+      ),
+    );
+    if (strokes == null || !mounted) return;
+
+    await services.local.updateInkStrokes(
+      id: inkId,
+      strokes: encodeInkStrokes(strokes),
+      now: DateTime.now(),
+    );
+    _inkInfo[inkId] = InlineInkInfo(
+      strokes: strokes,
+      aspectRatio: ink.aspectRatio,
+    );
+    setState(() {});
     unawaited(services.sync.sync());
   }
 
@@ -383,8 +474,8 @@ class _NoteEditPageState extends State<NoteEditPage> {
     }
   }
 
-  /// 在光标处插入一段文字，并保持照片的编号顺序。
-  void _insertTextAtCaret(String text) {
+    /// 在光标处插入一段文字，保持内嵌块的顺序不变。
+    void _insertTextAtCaret(String text) {
     final controller = _controller;
     if (controller == null) return;
 
@@ -394,18 +485,18 @@ class _NoteEditPageState extends State<NoteEditPage> {
     final start = selection.isValid ? selection.start : oldDisplay.length;
     final end = selection.isValid ? selection.end : oldDisplay.length;
     final newDisplay = oldDisplay.replaceRange(start, end, text);
-    final newIds = InlineNoteController.idsAfterEdit(
-      oldDisplay: oldDisplay,
-      newDisplay: newDisplay,
-      ids: _imageIds,
-    );
-
-    _undo.record((display: oldDisplay, ids: _imageIds));
-    setState(() {
-      _applySnapshot(
-        (display: newDisplay, ids: newIds),
-        moveCursorToEnd: false,
+      final newEmbeds = InlineNoteController.embedsAfterEdit(
+        oldDisplay: oldDisplay,
+        newDisplay: newDisplay,
+        embeds: _embeds,
       );
+
+      _undo.record((display: oldDisplay, embeds: _embeds));
+      setState(() {
+        _applySnapshot(
+          (display: newDisplay, embeds: newEmbeds),
+          moveCursorToEnd: false,
+        );
       controller.selection = TextSelection.collapsed(
         offset: start + text.length,
       );
@@ -413,10 +504,10 @@ class _NoteEditPageState extends State<NoteEditPage> {
     unawaited(_save());
   }
 
-  /// 在光标处放一个图片占位符，并且让它独占一行。
-  void _appendImageMarker(String id) {
-    final controller = _controller;
-    if (controller == null) return;
+    /// 在光标处放一个内嵌块（图片或手写画布），并且让它独占一行。
+    void _appendEmbed(String id, EmbedKind kind) {
+      final controller = _controller;
+      if (controller == null) return;
 
     _undo.breakSegment();
     final oldDisplay = controller.text;
@@ -430,23 +521,26 @@ class _NoteEditPageState extends State<NoteEditPage> {
     final padAfter = after.isEmpty || after.startsWith('\n') ? '' : '\n';
     final inserted = '$padBefore${InlineNoteController.placeholder}$padAfter';
 
-    final ids = List<String>.from(_imageIds)
-      ..insert(InlineNoteController.countPlaceholders(before), id);
-    final snapshot = (
-      display: '$before$inserted$after',
-      ids: ids,
-    );
-
-    _undo.record((display: oldDisplay, ids: _imageIds));
-    setState(() {
-      _applySnapshot(snapshot, moveCursorToEnd: false);
-      // 光标停在图片后面，接着就能打字。
-      controller.selection = TextSelection.collapsed(
-        offset: before.length + inserted.length,
+      final embeds = List<EmbedRef>.from(_embeds)
+        ..insert(
+          InlineNoteController.countPlaceholders(before),
+          EmbedRef(kind, id),
+        );
+      final snapshot = (
+        display: '$before$inserted$after',
+        embeds: embeds,
       );
-    });
 
-    unawaited(_resolveImageInfo(ids));
+      _undo.record((display: oldDisplay, embeds: _embeds));
+      setState(() {
+        _applySnapshot(snapshot, moveCursorToEnd: false);
+        // 光标停在块后面，接着就能打字。
+        controller.selection = TextSelection.collapsed(
+          offset: before.length + inserted.length,
+        );
+      });
+
+      unawaited(_resolveEmbeds(embeds));
     unawaited(_save());
     _scheduleImageRetry();
   }
@@ -776,6 +870,8 @@ class _NoteEditPageState extends State<NoteEditPage> {
                   unawaited(_insertImage(fromCamera: false));
                 case 'camera':
                   unawaited(_insertImage(fromCamera: true));
+                case 'ink':
+                  unawaited(_insertInk());
                 case 'paste':
                   unawaited(_pasteImageFromClipboard());
                 case 'move':
@@ -791,6 +887,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
             itemBuilder: (context) => [
               const PopupMenuItem(value: 'gallery', child: Text('插入图片')),
               const PopupMenuItem(value: 'camera', child: Text('拍照插入')),
+              const PopupMenuItem(value: 'ink', child: Text('插入手写')),
               if (ClipboardImage.isSupported)
                 const PopupMenuItem(value: 'paste', child: Text('粘贴图片')),
               const PopupMenuDivider(),

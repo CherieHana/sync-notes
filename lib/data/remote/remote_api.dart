@@ -88,6 +88,28 @@ abstract class RemoteApi {
   /// 从存储桶彻底删掉一个对象（清理孤儿图时用）。
   Future<void> deleteImageObject(String storagePath);
 
+  // --- 手写画布 ---
+
+  Future<List<RemoteInk>> fetchInksChangedSince(DateTime? since);
+
+  Future<RemoteInk?> fetchInkById(String id);
+
+  Future<RemoteInk> insertInk({
+    required String id,
+    required String strokes,
+    required int canvasWidth,
+    required int canvasHeight,
+    String? lastDeviceId,
+  });
+
+  Future<RemoteInk?> updateInkIfVersion({
+    required String id,
+    required String strokes,
+    required int expectedVersion,
+    required String lastDeviceId,
+    DateTime? deletedAt,
+  });
+
   // --- 实时 ---
 
   /// 笔记的实时变更流。事件可能来自本机，调用方负责过滤。

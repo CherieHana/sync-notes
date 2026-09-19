@@ -91,9 +91,10 @@ class SyncEngine {
     try {
       pushed += await _pushFolders(device);
       final notes = await _pushNotes(device);
-      pushed += notes.uploaded;
-      conflicts += notes.conflicts;
-      pushed += await _pushImages();
+        pushed += notes.uploaded;
+        conflicts += notes.conflicts;
+        pushed += await _pushImages();
+        pushed += await _pushInks(device);
     } on RemoteApiException catch (error) {
       return SyncReport(
         pushed: pushed,
@@ -107,8 +108,9 @@ class SyncEngine {
     try {
       pulled += await _pullFolders();
       pulled += await _pullNotes();
-      pulled += await _pullImages();
-      await _collectOrphanImages();
+        pulled += await _pullImages();
+        pulled += await _pullInks();
+        await _collectOrphanEmbeds();
     } on RemoteApiException catch (error) {
       return SyncReport(
         pushed: pushed,
@@ -338,6 +340,65 @@ class SyncEngine {
   }
 
   // ---------------------------------------------------------------------
+  // 推送：手写画布
+  // ---------------------------------------------------------------------
+
+  /// 推送手写画布。
+  ///
+  /// 笔迹可以反复修改，所以带版本号走乐观锁。撞车时不像笔记那样生成副本：
+  /// 一幅画没法自动合并，留两份手写也没人愿意去对，直接以本地这次改动为准重试。
+  Future<int> _pushInks(String device) async {
+    var pushed = 0;
+    for (final ink in await local.pendingInks()) {
+      if (ink.isNew) {
+        if (ink.isDeleted) {
+          await local.hardDeleteInk(ink.id);
+          continue;
+        }
+        final created = await remote.insertInk(
+          id: ink.id,
+          strokes: ink.strokes,
+          canvasWidth: ink.canvasWidth,
+          canvasHeight: ink.canvasHeight,
+          lastDeviceId: device,
+        );
+        await local.applyRemoteInk(created);
+        pushed++;
+        continue;
+      }
+
+      final updated = await remote.updateInkIfVersion(
+        id: ink.id,
+        strokes: ink.strokes,
+        expectedVersion: ink.baseVersion,
+        lastDeviceId: device,
+        deletedAt: ink.deletedAt,
+      );
+      if (updated != null) {
+        await local.applyRemoteInk(updated);
+        pushed++;
+        continue;
+      }
+
+      final current = await remote.fetchInkById(ink.id);
+      if (current == null) {
+        await local.hardDeleteInk(ink.id);
+        continue;
+      }
+      final retried = await remote.updateInkIfVersion(
+        id: ink.id,
+        strokes: ink.strokes,
+        expectedVersion: current.version,
+        lastDeviceId: device,
+        deletedAt: ink.deletedAt,
+      );
+      await local.applyRemoteInk(retried ?? current);
+      if (retried != null) pushed++;
+    }
+    return pushed;
+  }
+
+  // ---------------------------------------------------------------------
   // 拉取
   // ---------------------------------------------------------------------
 
@@ -430,25 +491,61 @@ class SyncEngine {
     }
   }
 
-  /// 回收没人引用的图片。
+  /// 回收没人引用的图片和手写画布。
+  Future<int> _pullInks() async {
+    final last = await local.getInksPulledAt();
+    final since = last?.subtract(pullOverlap);
+    final rows = await remote.fetchInksChangedSince(since);
+
+    var applied = 0;
+    var highWater = last;
+    for (final row in rows) {
+      if (highWater == null || row.updatedAt.isAfter(highWater)) {
+        highWater = row.updatedAt;
+      }
+      final existing = await local.findInkById(row.id);
+      if (existing != null) {
+        // 本地还没推上去的改动优先，留给下一轮推送处理。
+        if (existing.dirty) continue;
+        if (row.version <= existing.baseVersion) continue;
+      }
+      await local.applyRemoteInk(row);
+      applied++;
+    }
+
+    if (highWater != null && (last == null || highWater.isAfter(last))) {
+      await local.setInksPulledAt(highWater);
+    }
+    return applied;
+  }
+
+  /// 回收没人引用的图片和手写画布。
   ///
   /// 分两步走：先挂起一段时间再标记删除，标记删除之后再过一段时间才去动
   /// 存储桶里的文件。中间的等待是为了躲开同步时序——某个设备刚删掉图片标记，
   /// 另一个设备还没拉到那次修改，这时就把文件删了会让人家的图片变成裂图。
-  Future<void> _collectOrphanImages() async {
+  /// 手写画布没有文件本体，只删记录，但同样要走这两步。
+  Future<void> _collectOrphanEmbeds() async {
     final notes = await local.allVisibleNotes();
-    final referenced = <String>{};
+    final referencedImages = <String>{};
+    final referencedInks = <String>{};
     for (final note in notes) {
-      referenced.addAll(imageIdsIn(note.body));
+      referencedImages.addAll(imageIdsIn(note.body));
+      referencedInks.addAll(inkIdsIn(note.body));
     }
 
     final now = _clock();
 
     // 第一步：失去引用超过宽限期的，先标记删除，把墓碑同步给其他设备。
     for (final image in await local.allImages()) {
-      if (image.dirty || referenced.contains(image.id)) continue;
+      if (image.dirty || referencedImages.contains(image.id)) continue;
       if (now.difference(image.createdAt) < orphanGrace) continue;
       await local.softDeleteImage(id: image.id, now: now);
+    }
+    for (final ink in await local.allInks()) {
+      if (ink.dirty || referencedInks.contains(ink.id)) continue;
+      if (now.difference(ink.createdAt) < orphanGrace) continue;
+      await local.softDeleteInk(id: ink.id, now: now);
     }
 
     // 第二步：墓碑同步出去之后又等够久的，才真正删掉文件本体和记录。
@@ -463,6 +560,12 @@ class SyncEngine {
       }
       await local.deleteImageFile(image.id);
       await local.hardDeleteImage(image.id);
+    }
+    for (final ink in await local.deletedInks()) {
+      final deletedAt = ink.deletedAt;
+      if (deletedAt == null || ink.dirty) continue;
+      if (now.difference(deletedAt) < objectGrace) continue;
+      await local.hardDeleteInk(ink.id);
     }
   }
 
