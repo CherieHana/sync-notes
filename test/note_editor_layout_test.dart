@@ -231,6 +231,68 @@ void main() {
     );
   });
 
+  testWidgets('从菜单插入手写之后，光标落在画布下面', (tester) async {
+    await pumpEditor(tester, '第一行');
+    final editor = tester.widget<QuillEditor>(find.byType(QuillEditor));
+    final controller = editor.controller;
+
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('插入手写'));
+    await tester.pumpAndSettle();
+    expect(find.byType(InkCanvasPage), findsOneWidget);
+
+    await tester.tap(find.text('完成'));
+    await tester.pumpAndSettle();
+
+    // 光标要落在画布下面那一行：接着打的字应该排在画布后面。
+    final caret = controller.selection.baseOffset;
+    controller.document.insert(caret, '画布下面');
+    expect(
+      controller.document.toPlainText(),
+      '第一行\n\uFFFC\n画布下面\n',
+      reason: '光标没落在画布下面那一行',
+    );
+    expect(editor.focusNode.hasFocus, isTrue, reason: '插完画布焦点要回到编辑器');
+  });
+
+  testWidgets('「回到光标」把看不见的光标拉回屏幕中间', (tester) async {
+    final long = List.generate(80, (i) => '第 $i 行，把正文撑得比一屏长').join('\n');
+    await pumpEditor(tester, long);
+
+    final state = tester.state<ScrollableState>(
+      find
+          .descendant(
+            of: find.byType(SingleChildScrollView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    final controller = tester
+        .widget<QuillEditor>(find.byType(QuillEditor))
+        .controller;
+
+    // 光标放到文末，再把视图拖回顶部，模拟「光标被翻到看不见的地方」。
+    final end = controller.document.length - 1;
+    controller.updateSelection(
+      TextSelection.collapsed(offset: end),
+      ChangeSource.local,
+    );
+    await tester.pumpAndSettle();
+    state.position.jumpTo(0);
+    await tester.pumpAndSettle();
+    expect(state.position.pixels, 0);
+
+    await tester.tap(find.byTooltip('回到光标'));
+    await tester.pumpAndSettle();
+
+    expect(
+      state.position.pixels,
+      greaterThan(0),
+      reason: '「回到光标」没把光标滚回来',
+    );
+  });
+
   testWidgets('光标跑到看不见的地方，视图会跟着滚过去', (tester) async {
     final long = List.generate(80, (i) => '第 $i 行，把正文撑得比一屏长').join('\n');
     await pumpEditor(tester, long);

@@ -253,7 +253,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
   }
 
   /// 光标跑出可视区时才滚一次。
-  void _revealCaret() {
+  void _revealCaret({bool center = false}) {
     final editor = _editorKey.currentState;
     final selection = _controller?.selection;
     if (editor == null || selection == null || !selection.isValid) return;
@@ -272,11 +272,24 @@ class _NoteEditPageState extends State<NoteEditPage> {
     final bottom = _editorPadding.top + caret.bottom;
     final visibleBottom = position.pixels + position.viewportDimension;
 
+    if (center) {
+      // 手动跳转：不管光标在不在屏幕上，都把它挪到屏幕中间，看得见才安心。
+      final middle =
+          top - (position.viewportDimension - (bottom - top)) / 2;
+      _scrollTo(middle);
+      return;
+    }
     if (bottom + _caretMargin > visibleBottom) {
       _scrollTo(bottom + _caretMargin - position.viewportDimension);
     } else if (top - _caretMargin < position.pixels) {
       _scrollTo(top - _caretMargin);
     }
+  }
+
+  /// 「回到光标」：把焦点还给编辑器，再把光标挪到屏幕中间。
+  void _jumpToCaret() {
+    _focus.requestFocus();
+    _revealCaret(center: true);
   }
 
   void _scrollTo(double target) {
@@ -331,6 +344,9 @@ class _NoteEditPageState extends State<NoteEditPage> {
     if (box == null || !box.hasSize) return 0;
 
     final viewport = box.localToGlobal(Offset.zero) & box.size;
+    // 右侧那条是滚动条，别在拖它的时候插一脚，两股劲一起使就会抖。
+    if (pointer.dx > viewport.right - 18) return 0;
+
     if (pointer.dy > viewport.bottom - _edgeBand) {
       final strength =
           ((pointer.dy - (viewport.bottom - _edgeBand)) / _edgeBand).clamp(
@@ -593,11 +609,37 @@ class _NoteEditPageState extends State<NoteEditPage> {
         ? selection.start
         : controller.document.length - 1;
     final caret = RichBody.insertBlockEmbed(controller.document, offset, embed);
+    _moveCaretTo(caret);
+    unawaited(_save());
+  }
+
+  /// 把光标放到 [offset]，并顺手把焦点还给编辑器。
+  ///
+  /// 插图片前弹了系统的文件框、插手写前推了画布页，这趟来回之后焦点和选区都可能
+  /// 不在编辑器身上——光标看不见、接着打字也不知道会落到哪儿。这里明确再要一次
+  /// 焦点，并在这一帧结束后再对一遍选区，免得刚设好又被别的回调改回去。
+  void _moveCaretTo(int offset) {
+    final controller = _controller;
+    if (controller == null) return;
+
     controller.updateSelection(
-      TextSelection.collapsed(offset: caret),
+      TextSelection.collapsed(offset: offset),
       ChangeSource.local,
     );
-    unawaited(_save());
+    _focus.requestFocus();
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final safe = offset.clamp(0, controller.document.length - 1);
+      if (controller.selection.baseOffset != safe ||
+          controller.selection.extentOffset != safe) {
+        controller.updateSelection(
+          TextSelection.collapsed(offset: safe),
+          ChangeSource.local,
+        );
+      }
+      _scheduleReveal();
+    });
   }
 
   /// 在光标处插入一段文字。
@@ -954,6 +996,12 @@ class _NoteEditPageState extends State<NoteEditPage> {
       ),
       centerTitle: true,
       actions: [
+        if (!_needsUnlock && controller != null)
+          IconButton(
+            tooltip: '回到光标',
+            icon: const Icon(Icons.my_location),
+            onPressed: _jumpToCaret,
+          ),
         if (!_needsUnlock && controller != null)
           ListenableBuilder(
             listenable: controller,
