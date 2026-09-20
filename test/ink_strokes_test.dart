@@ -2,6 +2,36 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sync_notes/services/ink_strokes.dart';
 
 void main() {
+  test('换画布方向时笔迹转 90°，转两次回到原样', () {
+    const original = [
+      InkStroke(
+        color: 0xFF000000,
+        width: 4,
+        points: [InkPoint(0, 0), InkPoint(1, 0.5), InkPoint(0.25, 1)],
+      ),
+    ];
+
+    final landscape = rotateStrokes(original, clockwise: true);
+    // 顺时针：左上角 (0,0) 转到右上角 (1,0)。
+    expect(landscape.first.points[0].x, closeTo(1, 0.0001));
+    expect(landscape.first.points[0].y, closeTo(0, 0.0001));
+    // 笔宽和颜色不变。
+    expect(landscape.first.width, 4);
+    expect(landscape.first.color, 0xFF000000);
+
+    final back = rotateStrokes(landscape, clockwise: false);
+    for (var i = 0; i < original.first.points.length; i++) {
+      expect(
+        back.first.points[i].x,
+        closeTo(original.first.points[i].x, 0.0001),
+      );
+      expect(
+        back.first.points[i].y,
+        closeTo(original.first.points[i].y, 0.0001),
+      );
+    }
+  });
+
   test('笔迹编码再解码，内容不变', () {
     const strokes = [
       InkStroke(

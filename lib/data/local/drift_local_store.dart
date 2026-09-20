@@ -37,8 +37,7 @@ class DriftLocalStore implements LocalStore {
 
   @override
   Future<List<LocalNote>> allVisibleNotes() async {
-    final query = _db.select(_db.notes)
-      ..where((t) => t.deletedAt.isNull());
+    final query = _db.select(_db.notes)..where((t) => t.deletedAt.isNull());
     final rows = await query.get();
     return rows.map(_toLocal).toList();
   }
@@ -287,8 +286,7 @@ class DriftLocalStore implements LocalStore {
 
   @override
   Future<List<LocalInk>> allInks() async {
-    final query = _db.select(_db.noteInks)
-      ..where((t) => t.deletedAt.isNull());
+    final query = _db.select(_db.noteInks)..where((t) => t.deletedAt.isNull());
     final rows = await query.get();
     return rows.map(_toLocalInk).toList();
   }
@@ -325,14 +323,18 @@ class DriftLocalStore implements LocalStore {
   }
 
   @override
-  Future<void> updateInkStrokes({
+  Future<void> updateInk({
     required String id,
     required String strokes,
+    required int canvasWidth,
+    required int canvasHeight,
     required DateTime now,
   }) async {
     await (_db.update(_db.noteInks)..where((t) => t.id.equals(id))).write(
       NoteInksCompanion(
         strokes: Value(strokes),
+        canvasWidth: Value(canvasWidth),
+        canvasHeight: Value(canvasHeight),
         updatedAt: Value(now),
         dirty: const Value(true),
       ),
@@ -670,10 +672,7 @@ class DriftLocalStore implements LocalStore {
     await _db
         .into(_db.syncMetaEntries)
         .insertOnConflictUpdate(
-          SyncMetaEntriesCompanion(
-            key: Value(key),
-            value: Value(value),
-          ),
+          SyncMetaEntriesCompanion(key: Value(key), value: Value(value)),
         );
   }
 

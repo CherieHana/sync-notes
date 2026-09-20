@@ -25,7 +25,8 @@ class FakeLocalStore implements LocalStore {
 
   // drift 的 watch() 会在数据变化时重新推送，这里用两个广播流模拟同样的行为，
   // 否则界面测试里改了数据界面不会跟着更新。
-  final StreamController<void> _noteChanges = StreamController<void>.broadcast();
+  final StreamController<void> _noteChanges =
+      StreamController<void>.broadcast();
   final StreamController<void> _folderChanges =
       StreamController<void>.broadcast();
 
@@ -124,13 +125,29 @@ class FakeLocalStore implements LocalStore {
   Future<void> createInk(LocalInk ink) async => inks[ink.id] = ink;
 
   @override
-  Future<void> updateInkStrokes({
+  Future<void> updateInk({
     required String id,
     required String strokes,
+    required int canvasWidth,
+    required int canvasHeight,
     required DateTime now,
   }) async {
     final ink = inks[id]!;
-    inks[id] = ink.copyWith(strokes: strokes, updatedAt: now, dirty: true);
+    inks[id] = LocalInk(
+      id: ink.id,
+      strokes: strokes,
+      canvasWidth: canvasWidth,
+      canvasHeight: canvasHeight,
+      version: ink.version,
+      baseVersion: ink.baseVersion,
+      createdAt: ink.createdAt,
+      updatedAt: now,
+      serverUpdatedAt: ink.serverUpdatedAt,
+      deletedAt: ink.deletedAt,
+      dirty: true,
+      isNew: ink.isNew,
+      lastDeviceId: ink.lastDeviceId,
+    );
   }
 
   @override
@@ -221,10 +238,7 @@ class FakeLocalStore implements LocalStore {
   }
 
   @override
-  Future<void> softDelete({
-    required String id,
-    required DateTime now,
-  }) async {
+  Future<void> softDelete({required String id, required DateTime now}) async {
     final note = notes[id]!;
     notes[id] = note.copyWith(deletedAt: now, updatedAt: now, dirty: true);
     _touchNotes();
@@ -308,11 +322,7 @@ class FakeLocalStore implements LocalStore {
       );
     }
     final folder = folders[id]!;
-    folders[id] = folder.copyWith(
-      deletedAt: now,
-      updatedAt: now,
-      dirty: true,
-    );
+    folders[id] = folder.copyWith(deletedAt: now, updatedAt: now, dirty: true);
     _touchNotes();
     _touchFolders();
   }
@@ -326,11 +336,7 @@ class FakeLocalStore implements LocalStore {
     required DateTime now,
   }) async {
     final image = images[id]!;
-    images[id] = image.copyWith(
-      deletedAt: now,
-      updatedAt: now,
-      dirty: true,
-    );
+    images[id] = image.copyWith(deletedAt: now, updatedAt: now, dirty: true);
   }
 
   @override
@@ -464,8 +470,9 @@ class FakeRemoteApi implements RemoteApi {
   @override
   Future<List<RemoteNote>> fetchChangedSince(DateTime? since) async {
     _guard();
-    final list = notes.values.where((n) => _changed(n.updatedAt, since)).toList()
-      ..sort((a, b) => a.updatedAt.compareTo(b.updatedAt));
+    final list =
+        notes.values.where((n) => _changed(n.updatedAt, since)).toList()
+          ..sort((a, b) => a.updatedAt.compareTo(b.updatedAt));
     return list;
   }
 
@@ -534,10 +541,9 @@ class FakeRemoteApi implements RemoteApi {
   @override
   Future<List<RemoteFolder>> fetchFoldersChangedSince(DateTime? since) async {
     _guard();
-    final list = folders.values
-        .where((f) => _changed(f.updatedAt, since))
-        .toList()
-      ..sort((a, b) => a.updatedAt.compareTo(b.updatedAt));
+    final list =
+        folders.values.where((f) => _changed(f.updatedAt, since)).toList()
+          ..sort((a, b) => a.updatedAt.compareTo(b.updatedAt));
     return list;
   }
 
@@ -597,10 +603,9 @@ class FakeRemoteApi implements RemoteApi {
   @override
   Future<List<RemoteImage>> fetchImagesChangedSince(DateTime? since) async {
     _guard();
-    final list = images.values
-        .where((i) => _changed(i.updatedAt, since))
-        .toList()
-      ..sort((a, b) => a.updatedAt.compareTo(b.updatedAt));
+    final list =
+        images.values.where((i) => _changed(i.updatedAt, since)).toList()
+          ..sort((a, b) => a.updatedAt.compareTo(b.updatedAt));
     return list;
   }
 
@@ -694,6 +699,8 @@ class FakeRemoteApi implements RemoteApi {
   Future<RemoteInk?> updateInkIfVersion({
     required String id,
     required String strokes,
+    required int canvasWidth,
+    required int canvasHeight,
     required int expectedVersion,
     required String lastDeviceId,
     DateTime? deletedAt,
@@ -706,8 +713,8 @@ class FakeRemoteApi implements RemoteApi {
     final ink = RemoteInk(
       id: id,
       strokes: strokes,
-      canvasWidth: existing.canvasWidth,
-      canvasHeight: existing.canvasHeight,
+      canvasWidth: canvasWidth,
+      canvasHeight: canvasHeight,
       version: expectedVersion + 1,
       createdAt: existing.createdAt,
       updatedAt: _tick(),

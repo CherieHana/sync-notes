@@ -40,6 +40,27 @@ class InkStroke {
 const int inkCanvasWidth = 1000;
 const int inkCanvasHeight = 1400;
 
+/// 把笔迹整体转 90°，换画布方向（竖屏 ↔ 横屏）时用。
+///
+/// 笔迹是归一化坐标，只对调画布宽高会把画面压扁；这里把每个点也转 90°，
+/// 画出来的样子就不变，相当于"纸"转了。顺次转两次（竖→横→竖）能回到原样。
+List<InkStroke> rotateStrokes(
+  List<InkStroke> strokes, {
+  required bool clockwise,
+}) => [
+  for (final stroke in strokes)
+    stroke.copyWith(
+      points: [
+        for (final point in stroke.points)
+          clockwise
+              // 顺时针：原来的左下角转到左上角。
+              ? InkPoint(1 - point.y, point.x)
+              // 逆时针：原来的右上角转到左上角。
+              : InkPoint(point.y, 1 - point.x),
+      ],
+    ),
+];
+
 /// 编成 JSON。点用扁平数组存，比一堆 {x,y} 省一半体积。
 String encodeInkStrokes(List<InkStroke> strokes) {
   final data = strokes

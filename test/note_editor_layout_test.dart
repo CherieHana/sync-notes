@@ -41,7 +41,7 @@ void main() {
     return file.path;
   }
 
-  Future<void> pumpEditor(
+  Future<AppServices> pumpEditor(
     WidgetTester tester,
     String body, {
     bool withImageFile = true,
@@ -79,15 +79,16 @@ void main() {
       addTearDown(tester.view.reset);
     }
 
+    final services = AppServices(
+      userId: 'layout-test',
+      local: local,
+      remote: remote,
+      engine: engine,
+      sync: SyncController(engine: engine, remote: remote, local: local),
+    );
     await tester.pumpWidget(
       AppScope(
-        services: AppServices(
-          userId: 'layout-test',
-          local: local,
-          remote: remote,
-          engine: engine,
-          sync: SyncController(engine: engine, remote: remote, local: local),
-        ),
+        services: services,
         child: MaterialApp(
           // 工具栏要 Quill 的本地化代理，缺了会变成一块灰条。
           localizationsDelegates: appLocalizationsDelegates,
@@ -98,6 +99,7 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+    return services;
   }
 
   testWidgets('图片按原始比例排版，靠左，不撑满整行', (tester) async {
@@ -141,6 +143,57 @@ void main() {
     final text = tester.getRect(find.text('后面的文字', findRichText: true));
     final editor = tester.getRect(find.byType(QuillEditor));
     expect(text.top, greaterThan(editor.top + 100));
+  });
+
+  testWidgets('长按图片块能调旋转和大小，改动存进正文', (tester) async {
+    final long = List.generate(40, (i) => '第 $i 行，把正文撑得比一屏长').join('\n');
+    final services = await pumpEditor(tester, '$long\n[[img:$imageId]]\n');
+    final state = tester.state<ScrollableState>(
+      find
+          .descendant(
+            of: find.byType(SingleChildScrollView),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    final heightBefore = state.position.maxScrollExtent;
+
+    // 长按图片弹出面板。
+    await tester.ensureVisible(find.byType(Image).first);
+    await tester.pumpAndSettle();
+    await tester.longPress(find.byType(Image).first);
+    await tester.pumpAndSettle();
+    expect(find.text('图片：大小与旋转'), findsOneWidget);
+
+    // 整格转 90° 之后确定。
+    await tester.tap(find.text('转 90°'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确定'));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    // 属性写进了正文（跟着笔记一起同步），并且块变高了、内容跟着变长。
+    final note = (await services.local.findById('n1'))!;
+    expect(note.body, contains('"rotate":90'));
+    expect(
+      state.position.maxScrollExtent,
+      greaterThan(heightBefore),
+      reason: '转 90° 之后块的外接矩形变高，正文应该跟着变长',
+    );
+
+    // 再长按一次选「还原」，属性和尺寸都回到原样。
+    await tester.ensureVisible(find.byType(Image).first);
+    await tester.pumpAndSettle();
+    await tester.longPress(find.byType(Image).first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('还原'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确定'));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final restored = (await services.local.findById('n1'))!;
+    expect(restored.body, isNot(contains('"rotate"')));
   });
 
   testWidgets('点正文里的图片能打开大图预览，滚轮能放大', (tester) async {

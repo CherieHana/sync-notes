@@ -55,11 +55,7 @@ class SupabaseRemoteApi implements RemoteApi {
   @override
   Future<RemoteNote?> fetchById(String id) async {
     try {
-      final rows = await _client
-          .from(_notes)
-          .select()
-          .eq('id', id)
-          .limit(1);
+      final rows = await _client.from(_notes).select().eq('id', id).limit(1);
       if (rows.isEmpty) return null;
       return RemoteNote.fromJson(rows.first);
     } on RemoteApiException {
@@ -78,14 +74,11 @@ class SupabaseRemoteApi implements RemoteApi {
     String? lastDeviceId,
   }) async {
     try {
-      final rows = await _client
-          .from(_notes)
-          .upsert({
-            'id': id,
-            ..._noteColumns(payload),
-            'last_device_id': lastDeviceId,
-          })
-          .select();
+      final rows = await _client.from(_notes).upsert({
+        'id': id,
+        ..._noteColumns(payload),
+        'last_device_id': lastDeviceId,
+      }).select();
       if (rows.isEmpty) {
         throw const RemoteApiException('上传后服务端没有返回记录');
       }
@@ -161,11 +154,7 @@ class SupabaseRemoteApi implements RemoteApi {
   @override
   Future<RemoteFolder?> fetchFolderById(String id) async {
     try {
-      final rows = await _client
-          .from(_folders)
-          .select()
-          .eq('id', id)
-          .limit(1);
+      final rows = await _client.from(_folders).select().eq('id', id).limit(1);
       if (rows.isEmpty) return null;
       return RemoteFolder.fromJson(rows.first);
     } on RemoteApiException {
@@ -182,14 +171,11 @@ class SupabaseRemoteApi implements RemoteApi {
     String? lastDeviceId,
   }) async {
     try {
-      final rows = await _client
-          .from(_folders)
-          .upsert({
-            'id': id,
-            'name': name,
-            'last_device_id': lastDeviceId,
-          })
-          .select();
+      final rows = await _client.from(_folders).upsert({
+        'id': id,
+        'name': name,
+        'last_device_id': lastDeviceId,
+      }).select();
       if (rows.isEmpty) {
         throw const RemoteApiException('上传后服务端没有返回记录');
       }
@@ -262,17 +248,14 @@ class SupabaseRemoteApi implements RemoteApi {
     DateTime? deletedAt,
   }) async {
     try {
-      final rows = await _client
-          .from(_images)
-          .upsert({
-            'id': id,
-            'storage_path': storagePath,
-            'byte_size': byteSize,
-            'width': width,
-            'height': height,
-            'deleted_at': deletedAt?.toUtc().toIso8601String(),
-          })
-          .select();
+      final rows = await _client.from(_images).upsert({
+        'id': id,
+        'storage_path': storagePath,
+        'byte_size': byteSize,
+        'width': width,
+        'height': height,
+        'deleted_at': deletedAt?.toUtc().toIso8601String(),
+      }).select();
       if (rows.isEmpty) {
         throw const RemoteApiException('上传后服务端没有返回记录');
       }
@@ -373,16 +356,13 @@ class SupabaseRemoteApi implements RemoteApi {
     String? lastDeviceId,
   }) async {
     try {
-      final rows = await _client
-          .from(_inks)
-          .upsert({
-            'id': id,
-            'strokes': strokes,
-            'canvas_width': canvasWidth,
-            'canvas_height': canvasHeight,
-            'last_device_id': lastDeviceId,
-          })
-          .select();
+      final rows = await _client.from(_inks).upsert({
+        'id': id,
+        'strokes': strokes,
+        'canvas_width': canvasWidth,
+        'canvas_height': canvasHeight,
+        'last_device_id': lastDeviceId,
+      }).select();
       if (rows.isEmpty) {
         throw const RemoteApiException('上传后服务端没有返回记录');
       }
@@ -398,6 +378,8 @@ class SupabaseRemoteApi implements RemoteApi {
   Future<RemoteInk?> updateInkIfVersion({
     required String id,
     required String strokes,
+    required int canvasWidth,
+    required int canvasHeight,
     required int expectedVersion,
     required String lastDeviceId,
     DateTime? deletedAt,
@@ -407,6 +389,8 @@ class SupabaseRemoteApi implements RemoteApi {
           .from(_inks)
           .update({
             'strokes': strokes,
+            'canvas_width': canvasWidth,
+            'canvas_height': canvasHeight,
             'version': expectedVersion + 1,
             'last_device_id': lastDeviceId,
             'deleted_at': deletedAt?.toUtc().toIso8601String(),
@@ -499,7 +483,10 @@ class SupabaseRemoteApi implements RemoteApi {
   RealtimeChannel _subscribe<T>({
     required String table,
     required String channelName,
-    required T Function(Map<String, dynamic> record, PostgresChangePayload payload)
+    required T Function(
+      Map<String, dynamic> record,
+      PostgresChangePayload payload,
+    )
     onRecord,
     required StreamController<T> controller,
   }) {

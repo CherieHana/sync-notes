@@ -105,6 +105,8 @@ abstract class RemoteApi {
   Future<RemoteInk?> updateInkIfVersion({
     required String id,
     required String strokes,
+    required int canvasWidth,
+    required int canvasHeight,
     required int expectedVersion,
     required String lastDeviceId,
     DateTime? deletedAt,

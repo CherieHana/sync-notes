@@ -4,18 +4,29 @@ import 'dart:math' as math;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
+import '../services/export_files.dart';
+
 /// 图片预览：点正文里的图打开，可以放大看细节。
 ///
 /// 缩放方式按常用的来：手机双指捏合、电脑鼠标滚轮直接滚（不用按 Ctrl）、
 /// 双击在图和 1:1 之间切换。放大之后拖着平移。
 class ImagePreviewPage extends StatefulWidget {
-  const ImagePreviewPage({super.key, required this.path, this.title});
+  const ImagePreviewPage({
+    super.key,
+    required this.path,
+    this.title,
+    this.rotate = 0,
+  });
 
   /// 图片在本机的完整路径。
   final String path;
 
   /// 标题栏上显示的文字，一般给个文件名。
   final String? title;
+
+  /// 笔记里给这张图设的旋转角度（度）。预览按它显示，「保存为图片」也会
+  /// 把同样的角度烘焙进导出的副本。
+  final double rotate;
 
   @override
   State<ImagePreviewPage> createState() => _ImagePreviewPageState();
@@ -30,6 +41,8 @@ class _ImagePreviewPageState extends State<ImagePreviewPage> {
 
   final TransformationController _transform = TransformationController();
   Offset? _lastDoubleTapPosition;
+
+  bool _saving = false;
 
   @override
   void dispose() {
@@ -74,6 +87,42 @@ class _ImagePreviewPageState extends State<ImagePreviewPage> {
     }
   }
 
+  /// 按当前旋转导出成文件。
+  ///
+  /// 烘焙的是副本：笔记里那张原图一个字都不动，随时能「还原」回原样。
+  Future<void> _saveAsImage() async {
+    if (_saving) return;
+    setState(() => _saving = true);
+    try {
+      final file = File(widget.path);
+      if (!file.existsSync()) {
+        _toast('这张图在本地找不到了');
+        return;
+      }
+      final raw = await file.readAsBytes();
+      final bytes = bakeRotation(raw, widget.rotate);
+      if (!mounted) return;
+      final saved = await saveBytesAs(
+        fileName: '图片-${exportStamp()}.jpg',
+        bytes: bytes,
+        mimeType: 'image/jpeg',
+      );
+      if (!mounted) return;
+      if (saved) _toast('已保存为图片');
+    } catch (error) {
+      if (mounted) _toast('保存失败：$error');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  void _toast(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
   @override
   Widget build(BuildContext context) {
     final title = widget.title;
@@ -91,6 +140,17 @@ class _ImagePreviewPageState extends State<ImagePreviewPage> {
         centerTitle: true,
         actions: [
           IconButton(
+            tooltip: '保存为图片',
+            onPressed: _saving ? null : () => _saveAsImage(),
+            icon: _saving
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.save_alt),
+          ),
+          IconButton(
             tooltip: '适应屏幕',
             icon: const Icon(Icons.fit_screen_outlined),
             onPressed: _reset,
@@ -107,26 +167,33 @@ class _ImagePreviewPageState extends State<ImagePreviewPage> {
             transformationController: _transform,
             minScale: minScale,
             maxScale: maxScale,
-            child: Center(
-              child: Image.file(
-                File(widget.path),
-                fit: BoxFit.contain,
-                errorBuilder: (context, _, _) => const Padding(
-                  padding: EdgeInsets.all(32),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.broken_image_outlined,
-                        color: Colors.white54,
-                        size: 40,
+            child: RotatedBox(
+              quarterTurns: (widget.rotate / 90).round() % 4,
+              child: Transform.rotate(
+                // 非整 90° 的微调交给 Transform：RotatedBox 只吃整格。
+                angle: (widget.rotate % 90) * math.pi / 180,
+                child: Center(
+                  child: Image.file(
+                    File(widget.path),
+                    fit: BoxFit.contain,
+                    errorBuilder: (context, _, _) => const Padding(
+                      padding: EdgeInsets.all(32),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.broken_image_outlined,
+                            color: Colors.white54,
+                            size: 40,
+                          ),
+                          SizedBox(height: 12),
+                          Text(
+                            '这张图在本地找不到了',
+                            style: TextStyle(color: Colors.white70),
+                          ),
+                        ],
                       ),
-                      SizedBox(height: 12),
-                      Text(
-                        '这张图在本地找不到了',
-                        style: TextStyle(color: Colors.white70),
-                      ),
-                    ],
+                    ),
                   ),
                 ),
               ),

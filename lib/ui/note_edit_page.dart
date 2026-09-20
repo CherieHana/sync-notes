@@ -10,7 +10,9 @@ import 'package:uuid/uuid.dart';
 
 import '../app_services.dart';
 import '../data/local/local_store.dart';
+import '../services/block_style.dart';
 import '../services/clipboard_image.dart';
+import '../services/export_files.dart';
 import '../services/external_drop.dart';
 import '../services/file_import.dart';
 import '../services/image_pipeline.dart';
@@ -18,9 +20,11 @@ import '../services/ink_strokes.dart';
 import '../services/note_lock.dart';
 import '../services/rich_body.dart';
 import '../util/note_text.dart';
-import 'ink_canvas_page.dart';
+import 'note_image_export.dart';
 import 'image_preview_page.dart';
+import 'ink_canvas_page.dart';
 import 'note_unlock_view.dart';
+import 'widgets/block_style_sheet.dart';
 import 'widgets/folder_picker.dart';
 import 'widgets/note_embeds.dart';
 import 'widgets/text_prompt_dialog.dart';
@@ -42,13 +46,6 @@ class NoteEditPage extends StatefulWidget {
 class _NoteEditPageState extends State<NoteEditPage> {
   static const Duration _autosaveDelay = Duration(milliseconds: 800);
   static const Duration _imageRetryDelay = Duration(seconds: 3);
-
-  /// 字号档位。Quill 的字号只有 small/normal/large/huge 四档，
-  /// 默认是 10/18/22，这里换成能覆盖大号需求的数值。
-  static const double _sizeSmall = 12;
-  static const double _sizeNormal = 16;
-  static const double _sizeLarge = 22;
-  static const double _sizeHuge = 32;
 
   /// 正文四周的留白。放在外面这层滚动视图上，编辑器自己不再管边距。
   static const EdgeInsets _editorPadding = EdgeInsets.fromLTRB(16, 12, 16, 16);
@@ -125,6 +122,9 @@ class _NoteEditPageState extends State<NoteEditPage> {
 
   /// 已排队的「把光标滚出来」，一帧只做一次。
   bool _revealScheduled = false;
+
+  /// 正在导出长图（导出期间菜单里显示转圈，避免重复触发）。
+  bool _exporting = false;
 
   double _keyboardInset = 0;
 
@@ -775,20 +775,22 @@ class _NoteEditPageState extends State<NoteEditPage> {
     if (services == null) return;
 
     _focus.unfocus();
-    final strokes = await Navigator.of(context).push<List<InkStroke>>(
+    final result = await Navigator.of(context).push<InkCanvasResult>(
       MaterialPageRoute(
         builder: (_) => const InkCanvasPage(initialStrokes: []),
       ),
     );
     await _quietAfterFullScreenPage();
-    if (strokes == null || !mounted) return;
+    if (result == null || !mounted) return;
 
     final id = const Uuid().v4();
     final now = DateTime.now();
     await services.local.createInk(
       LocalInk(
         id: id,
-        strokes: encodeInkStrokes(strokes),
+        strokes: encodeInkStrokes(result.strokes),
+        canvasWidth: result.canvasWidth,
+        canvasHeight: result.canvasHeight,
         version: 1,
         baseVersion: 0,
         createdAt: now,
@@ -800,6 +802,10 @@ class _NoteEditPageState extends State<NoteEditPage> {
       ),
     );
     _insertBlock(BlockEmbed(inkEmbedType, id));
+    _inkInfo[id] = NoteInkInfo(
+      strokes: result.strokes,
+      aspectRatio: result.canvasWidth / result.canvasHeight,
+    );
     unawaited(services.sync.sync());
   }
 
@@ -818,30 +824,35 @@ class _NoteEditPageState extends State<NoteEditPage> {
 
     // 从整页画布回来时不让编辑器自动拿回焦点，省得输入法跟着弹出来。
     _focus.unfocus();
-    final strokes = await Navigator.of(context).push<List<InkStroke>>(
+    final result = await Navigator.of(context).push<InkCanvasResult>(
       MaterialPageRoute(
-        builder: (_) =>
-            InkCanvasPage(initialStrokes: decodeInkStrokes(ink.strokes)),
+        builder: (_) => InkCanvasPage(
+          initialStrokes: decodeInkStrokes(ink.strokes),
+          canvasWidth: ink.canvasWidth,
+          canvasHeight: ink.canvasHeight,
+        ),
       ),
     );
     await _quietAfterFullScreenPage();
-    if (strokes == null || !mounted) return;
+    if (result == null || !mounted) return;
 
-    await services.local.updateInkStrokes(
+    await services.local.updateInk(
       id: inkId,
-      strokes: encodeInkStrokes(strokes),
+      strokes: encodeInkStrokes(result.strokes),
+      canvasWidth: result.canvasWidth,
+      canvasHeight: result.canvasHeight,
       now: DateTime.now(),
     );
     _inkInfo[inkId] = NoteInkInfo(
-      strokes: strokes,
-      aspectRatio: ink.aspectRatio,
+      strokes: result.strokes,
+      aspectRatio: result.canvasWidth / result.canvasHeight,
     );
     setState(() {});
     unawaited(services.sync.sync());
   }
 
   /// 点正文里的图片，打开大图预览（可以滚轮或双指放大）。
-  Future<void> _openImagePreview(String imageId) async {
+  Future<void> _openImagePreview(String imageId, BlockStyle style) async {
     final info = _imageInfo[imageId];
     final path = info?.path;
     if (path == null) {
@@ -852,10 +863,82 @@ class _NoteEditPageState extends State<NoteEditPage> {
     _focus.unfocus();
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
-        builder: (_) => ImagePreviewPage(path: path, title: p.basename(path)),
+        builder: (_) => ImagePreviewPage(
+          path: path,
+          title: p.basename(path),
+          rotate: style.rotate ?? 0,
+        ),
       ),
     );
     await _quietAfterFullScreenPage();
+  }
+
+  /// 长按正文里的图片/手写块：弹面板调大小和旋转，确定后写回正文。
+  ///
+  /// 改动是写在那个块自己身上的属性，跟着正文同步；「还原」就是把它清掉。
+  Future<void> _editBlockStyle({
+    required String title,
+    required int offset,
+    required BlockStyle style,
+    required double aspectRatio,
+  }) async {
+    final controller = _controller;
+    if (controller == null) return;
+
+    final next = await showBlockStyleSheet(
+      context,
+      title: '$title：大小与旋转',
+      initial: style,
+      aspectRatio: aspectRatio,
+    );
+    if (next == null || !mounted) return;
+    if (next == style) return;
+
+    final document = controller.document;
+    if (offset < 0 || offset >= document.length) return;
+    applyBlockStyle(document, offset, next);
+    setState(() {});
+    unawaited(_save());
+  }
+
+  /// 把整篇笔记导出成一张长图。
+  Future<void> _exportNoteImage() async {
+    final services = _services;
+    final controller = _controller;
+    if (services == null || controller == null || _exporting) return;
+
+    setState(() => _exporting = true);
+    try {
+      final result = await exportNoteImage(
+        context: context,
+        body: RichBody.encode(controller.document),
+        imageInfoOf: _imageInfoOf,
+        inkInfoOf: _inkInfoOf,
+      );
+      if (!mounted) return;
+
+      final bytes = result.bytes;
+      if (bytes == null) {
+        _toast(result.tooLong ? '这条笔记太长，一张图放不下' : '导出失败，稍后再试');
+        return;
+      }
+      final saved = await saveBytesAs(
+        fileName: '笔记-${exportStamp()}.png',
+        bytes: bytes,
+        mimeType: 'image/png',
+      );
+      if (!mounted) return;
+      if (!saved) return;
+      _toast(
+        result.missingImages > 0
+            ? '已保存为图片（有 ${result.missingImages} 张图还没同步下来，图里是占位框）'
+            : '已保存为图片',
+      );
+    } catch (error) {
+      if (mounted) _toast('导出失败：$error');
+    } finally {
+      if (mounted) setState(() => _exporting = false);
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -1274,6 +1357,17 @@ class _NoteEditPageState extends State<NoteEditPage> {
               onPressed: controller.hasUndo ? _undoStep : null,
             ),
           ),
+        if (_exporting)
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 16),
+            child: Center(
+              child: SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
+          ),
         if (!_needsUnlock && note != null)
           PopupMenuButton<String>(
             tooltip: '更多',
@@ -1296,6 +1390,8 @@ class _NoteEditPageState extends State<NoteEditPage> {
                   unawaited(_changePassphrase());
                 case 'unlock-off':
                   unawaited(_removeLock());
+                case 'export':
+                  unawaited(_exportNoteImage());
               }
             },
             itemBuilder: (context) => [
@@ -1306,6 +1402,7 @@ class _NoteEditPageState extends State<NoteEditPage> {
                 const PopupMenuItem(value: 'paste', child: Text('粘贴图片')),
               const PopupMenuDivider(),
               const PopupMenuItem(value: 'move', child: Text('移动到…')),
+              const PopupMenuItem(value: 'export', child: Text('导出为图片')),
               const PopupMenuDivider(),
               if (!note.locked)
                 const PopupMenuItem(value: 'encrypt', child: Text('加密这篇笔记'))
@@ -1406,13 +1503,29 @@ class _NoteEditPageState extends State<NoteEditPage> {
                         embedBuilders: [
                           NoteImageEmbedBuilder(
                             infoOf: _imageInfoOf,
-                            onTap: (id) {
-                              unawaited(_openImagePreview(id));
-                            },
+                            onTap: (id, offset, style) =>
+                                unawaited(_openImagePreview(id, style)),
+                            onLongPress: (id, offset, style) => unawaited(
+                              _editBlockStyle(
+                                title: '图片',
+                                offset: offset,
+                                style: style,
+                                aspectRatio: _imageInfoOf(id).aspectRatio,
+                              ),
+                            ),
                           ),
                           NoteInkEmbedBuilder(
                             infoOf: _inkInfoOf,
-                            onTap: (id) => unawaited(_openInkCanvas(id)),
+                            onTap: (id, offset, style) =>
+                                unawaited(_openInkCanvas(id)),
+                            onLongPress: (id, offset, style) => unawaited(
+                              _editBlockStyle(
+                                title: '手写画布',
+                                offset: offset,
+                                style: style,
+                                aspectRatio: _inkInfoOf(id).aspectRatio,
+                              ),
+                            ),
                           ),
                         ],
                         contextMenuBuilder: _buildContextMenu,
@@ -1423,7 +1536,9 @@ class _NoteEditPageState extends State<NoteEditPage> {
                         // 这个扩展点在默认样式之后再合并，正好用来覆盖字号。
                         customStyleBuilder: (attribute) =>
                             attribute.key == Attribute.size.key
-                            ? TextStyle(fontSize: _fontSizeFor(attribute.value))
+                            ? TextStyle(
+                                fontSize: inlineFontSizeFor(attribute.value),
+                              )
                             : const TextStyle(),
                       ),
                     ),
@@ -1492,14 +1607,6 @@ class _NoteEditPageState extends State<NoteEditPage> {
       ),
     );
   }
-
-  /// Quill 的字号只有 small/normal/large/huge 四档，这里映射成具体像素值。
-  static double _fontSizeFor(Object? value) => switch (value) {
-    'small' => _sizeSmall,
-    'large' => _sizeLarge,
-    'huge' => _sizeHuge,
-    _ => _sizeNormal,
-  };
 
   /// 右键（长按）菜单。桌面端额外挂一个「粘贴图片」：
   /// Flutter 自带的粘贴只处理文本，从截图工具或浏览器复制的图片粘不进来。

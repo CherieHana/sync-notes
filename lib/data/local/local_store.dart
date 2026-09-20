@@ -397,9 +397,12 @@ abstract class LocalStore {
 
   Future<void> createInk(LocalInk ink);
 
-  Future<void> updateInkStrokes({
+  /// 更新笔迹，同时更新画布标称尺寸（横屏/竖屏切换会改它）。
+  Future<void> updateInk({
     required String id,
     required String strokes,
+    required int canvasWidth,
+    required int canvasHeight,
     required DateTime now,
   });
 

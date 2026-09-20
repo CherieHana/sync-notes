@@ -370,6 +370,8 @@ class SyncEngine {
       final updated = await remote.updateInkIfVersion(
         id: ink.id,
         strokes: ink.strokes,
+        canvasWidth: ink.canvasWidth,
+        canvasHeight: ink.canvasHeight,
         expectedVersion: ink.baseVersion,
         lastDeviceId: device,
         deletedAt: ink.deletedAt,
@@ -402,6 +404,8 @@ class SyncEngine {
       final retried = await remote.updateInkIfVersion(
         id: ink.id,
         strokes: ink.strokes,
+        canvasWidth: ink.canvasWidth,
+        canvasHeight: ink.canvasHeight,
         expectedVersion: current.version,
         lastDeviceId: device,
         deletedAt: ink.deletedAt,

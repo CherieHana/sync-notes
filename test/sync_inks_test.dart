@@ -75,7 +75,13 @@ void main() {
     );
     remote.seedInk(remoteInk(id: inkId, strokes: '[]'));
 
-    await local.updateInkStrokes(id: inkId, strokes: '[新笔迹]', now: now);
+    await local.updateInk(
+      id: inkId,
+      strokes: '[新笔迹]',
+      canvasWidth: 1000,
+      canvasHeight: 1400,
+      now: now,
+    );
     await engine.syncNow();
 
     expect(remote.inks[inkId]!.strokes, '[新笔迹]');
