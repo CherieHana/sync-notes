@@ -145,9 +145,13 @@ void main() {
     expect(text.top, greaterThan(editor.top + 100));
   });
 
-  testWidgets('长按图片块能调旋转和大小，改动存进正文', (tester) async {
+  testWidgets('手机上长按图片块能调旋转和大小，改动存进正文', (tester) async {
     final long = List.generate(40, (i) => '第 $i 行，把正文撑得比一屏长').join('\n');
-    final services = await pumpEditor(tester, '$long\n[[img:$imageId]]\n');
+    final services = await pumpEditor(
+      tester,
+      '$long\n[[img:$imageId]]\n',
+      platform: TargetPlatform.android,
+    );
     final state = tester.state<ScrollableState>(
       find
           .descendant(
@@ -194,6 +198,42 @@ void main() {
 
     final restored = (await services.local.findById('n1'))!;
     expect(restored.body, isNot(contains('"rotate"')));
+  });
+
+  testWidgets('电脑上右键图片块打开面板，长按不再触发', (tester) async {
+    final long = List.generate(40, (i) => '第 $i 行，把正文撑得比一屏长').join('\n');
+    final services = await pumpEditor(
+      tester,
+      '$long\n[[img:$imageId]]\n',
+      platform: TargetPlatform.windows,
+    );
+
+    await tester.ensureVisible(find.byType(Image).first);
+    await tester.pumpAndSettle();
+
+    // 长按（鼠标按住不动）在电脑上不该弹面板——那手势反直觉。
+    await tester.longPress(find.byType(Image).first);
+    await tester.pumpAndSettle();
+    expect(find.text('图片：大小与旋转'), findsNothing);
+
+    // 右键才弹。
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byType(Image).first),
+      buttons: kSecondaryMouseButton,
+      kind: PointerDeviceKind.mouse,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(find.text('图片：大小与旋转'), findsOneWidget);
+
+    await tester.tap(find.text('转 90°'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确定'));
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    final note = (await services.local.findById('n1'))!;
+    expect(note.body, contains('"rotate":90'));
   });
 
   testWidgets('点正文里的图片能打开大图预览，滚轮能放大', (tester) async {

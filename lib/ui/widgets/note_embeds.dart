@@ -48,6 +48,12 @@ Size noteImageAutoSize(double aspectRatio) => autoBlockSize(
 Size noteInkAutoSize(double aspectRatio) =>
     autoBlockSize(aspectRatio: aspectRatio, maxWidth: 300, maxHeight: 260);
 
+/// 手机/平板才用长按开面板；电脑上长按鼠标反直觉，那边走右键。
+bool usesLongPressForBlockPanel(BuildContext context) {
+  final platform = Theme.of(context).platform;
+  return platform == TargetPlatform.android || platform == TargetPlatform.iOS;
+}
+
 /// 一个内嵌块的通用外壳：按大小/旋转摆好位置，套上点击和长按手势。
 ///
 /// 正文编辑器和导出长图都用它，保证两边长得一模一样。
@@ -58,6 +64,7 @@ class NoteBlockShell extends StatelessWidget {
     required this.child,
     this.onTap,
     this.onLongPress,
+    this.onSecondaryTap,
   });
 
   final BlockLayout layout;
@@ -68,6 +75,9 @@ class NoteBlockShell extends StatelessWidget {
 
   /// 长按：弹出大小/旋转面板。
   final VoidCallback? onLongPress;
+
+  /// 右键（鼠标次要键）：桌面端用它打开大小/旋转面板。
+  final VoidCallback? onSecondaryTap;
 
   @override
   Widget build(BuildContext context) {
@@ -82,6 +92,9 @@ class NoteBlockShell extends StatelessWidget {
           behavior: HitTestBehavior.opaque,
           onTap: onTap,
           onLongPress: onLongPress,
+          onSecondaryTapUp: onSecondaryTap == null
+              ? null
+              : (_) => onSecondaryTap!(),
           child: SizedBox(
             width: layout.box.width,
             height: layout.box.height,
@@ -112,12 +125,14 @@ class NoteImageBlock extends StatelessWidget {
     this.style = BlockStyle.none,
     this.onTap,
     this.onLongPress,
+    this.onSecondaryTap,
   });
 
   final NoteImageInfo info;
   final BlockStyle style;
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
+  final VoidCallback? onSecondaryTap;
 
   @override
   Widget build(BuildContext context) {
@@ -141,6 +156,7 @@ class NoteImageBlock extends StatelessWidget {
       layout: layout,
       onTap: onTap,
       onLongPress: onLongPress,
+      onSecondaryTap: onSecondaryTap,
       child: ClipRRect(
         borderRadius: const BorderRadius.all(Radius.circular(8)),
         child: picture,
@@ -163,12 +179,14 @@ class NoteInkBlock extends StatelessWidget {
     this.style = BlockStyle.none,
     this.onTap,
     this.onLongPress,
+    this.onSecondaryTap,
   });
 
   final NoteInkInfo info;
   final BlockStyle style;
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
+  final VoidCallback? onSecondaryTap;
 
   @override
   Widget build(BuildContext context) {
@@ -183,6 +201,7 @@ class NoteInkBlock extends StatelessWidget {
       layout: layout,
       onTap: onTap,
       onLongPress: onLongPress,
+      onSecondaryTap: onSecondaryTap,
       child: Container(
         decoration: BoxDecoration(
           color: theme.colorScheme.surfaceContainerLowest,
@@ -230,11 +249,16 @@ class NoteImageEmbedBuilder extends EmbedBuilder {
     final id = node.value.data as String;
     final offset = node.documentOffset;
     final style = BlockStyle.fromAttributes(node.style.attributes);
+    final mobile = usesLongPressForBlockPanel(context);
     return NoteImageBlock(
       info: infoOf(id),
       style: style,
       onTap: onTap == null ? null : () => onTap!(id, offset, style),
-      onLongPress: onLongPress == null
+      // 手机长按、电脑右键，都打开大小/旋转面板。
+      onLongPress: onLongPress == null || !mobile
+          ? null
+          : () => onLongPress!(id, offset, style),
+      onSecondaryTap: onLongPress == null
           ? null
           : () => onLongPress!(id, offset, style),
     );
@@ -262,11 +286,15 @@ class NoteInkEmbedBuilder extends EmbedBuilder {
     final id = node.value.data as String;
     final offset = node.documentOffset;
     final style = BlockStyle.fromAttributes(node.style.attributes);
+    final mobile = usesLongPressForBlockPanel(context);
     return NoteInkBlock(
       info: infoOf(id),
       style: style,
       onTap: onTap == null ? null : () => onTap!(id, offset, style),
-      onLongPress: onLongPress == null
+      onLongPress: onLongPress == null || !mobile
+          ? null
+          : () => onLongPress!(id, offset, style),
+      onSecondaryTap: onLongPress == null
           ? null
           : () => onLongPress!(id, offset, style),
     );
