@@ -4,6 +4,25 @@ import 'dart:typed_data';
 import 'package:fast_gbk/fast_gbk.dart';
 import 'package:file_picker/file_picker.dart';
 
+/// 弹系统文件框挑文件。
+///
+/// 做成可替换的全局，是因为自动化测试里不能真的弹框——弹出来整个用例就
+/// 卡在那儿等用户点。测试会把它换成桩函数，正式运行就是 [systemFilePicker]。
+typedef PickFilesDelegate =
+    Future<List<PlatformFile>> Function({
+      FileType type,
+      List<String>? allowedExtensions,
+    });
+
+PickFilesDelegate filePicker = systemFilePicker;
+
+/// 真的去弹系统文件框。测试想还原成正式行为就把它赋回 [filePicker]。
+Future<List<PlatformFile>> systemFilePicker({
+  FileType type = FileType.any,
+  List<String>? allowedExtensions,
+}) =>
+    FilePicker.pickFiles(type: type, allowedExtensions: allowedExtensions);
+
 /// 从文件读出来的一篇待导入内容。
 class ImportedDocument {
   const ImportedDocument({
@@ -36,7 +55,7 @@ class FileImport {
 
   /// 让用户挑文件，支持一次多选。返回空列表表示取消了。
   static Future<List<PlatformFile>> pickFiles() {
-    return FilePicker.pickFiles(
+    return filePicker(
       type: FileType.custom,
       allowedExtensions: allowedExtensions,
     );

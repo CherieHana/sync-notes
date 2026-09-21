@@ -272,6 +272,17 @@ class FakeLocalStore implements LocalStore {
   }
 
   @override
+  Future<void> setNotePinned({
+    required String id,
+    required bool pinned,
+  }) async {
+    final note = notes[id]!;
+    // 和 drift 实现一致：只改置顶，不动 updatedAt / dirty。
+    notes[id] = note.copyWith(pinned: pinned);
+    _touchNotes();
+  }
+
+  @override
   Future<void> setNoteLock({
     required String id,
     required bool locked,
@@ -367,6 +378,8 @@ class FakeLocalStore implements LocalStore {
       id: note.id,
       body: note.body,
       folderId: note.folderId,
+      // 置顶是本机偏好，服务端快照不碰它。
+      pinned: existing?.pinned ?? false,
       locked: note.locked,
       passphraseHash: note.passphraseHash,
       passphraseSalt: note.passphraseSalt,
@@ -815,6 +828,7 @@ LocalNote localNote({
   bool dirty = true,
   bool isNew = false,
   String? folderId,
+  bool pinned = false,
   bool locked = false,
   String? passphraseHash,
   String? passphraseSalt,
@@ -828,6 +842,7 @@ LocalNote localNote({
     createdAt: at,
     updatedAt: at,
     folderId: folderId,
+    pinned: pinned,
     locked: locked,
     passphraseHash: passphraseHash,
     passphraseSalt: passphraseSalt,

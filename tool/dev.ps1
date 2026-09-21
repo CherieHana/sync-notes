@@ -128,7 +128,7 @@ switch ($Command) {
         Invoke-Flutter @('analyze')
     }
     'test' {
-        Invoke-Flutter @('test')
+        Invoke-Flutter (@('test') + $Rest)
     }
     'apk' {
         Assert-Config

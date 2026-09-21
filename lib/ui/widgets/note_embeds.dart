@@ -29,11 +29,22 @@ class NoteInkInfo {
   const NoteInkInfo({
     this.strokes,
     this.aspectRatio = inkCanvasWidth / inkCanvasHeight,
+    this.paper = PaperStyle.blank,
   });
 
   /// 笔迹。为 null 表示还没从服务端同步下来。
   final List<InkStroke>? strokes;
   final double aspectRatio;
+
+  /// 这块画布用的纸张样式（空白/横线/方格/点阵）。
+  final PaperStyle paper;
+
+  NoteInkInfo copyWith({List<InkStroke>? strokes, double? aspectRatio, PaperStyle? paper}) =>
+      NoteInkInfo(
+        strokes: strokes ?? this.strokes,
+        aspectRatio: aspectRatio ?? this.aspectRatio,
+        paper: paper ?? this.paper,
+      );
 }
 
 /// 图片块在正文里的自动尺寸（没手动调过大小时用）。
@@ -209,13 +220,27 @@ class NoteInkBlock extends StatelessWidget {
           border: Border.all(color: theme.dividerColor),
         ),
         clipBehavior: Clip.antiAlias,
-        child: strokes == null
-            ? const Center(child: Icon(Icons.draw_outlined, size: 28))
-            : strokes.isEmpty
-            ? Center(
-                child: Text('空手写块，点一下开始写', style: theme.textTheme.bodySmall),
-              )
-            : CustomPaint(painter: InkPainter(strokes: strokes)),
+        child: CustomPaint(
+          // 纸在下面、笔迹在上面。空画布也把纸画出来，
+          // 这样「这块用的是横线纸」一眼就能看出来。
+          painter: PaperPainter(
+            paper: info.paper,
+            background: theme.colorScheme.surfaceContainerLowest,
+          ),
+          foregroundPainter: strokes == null || strokes.isEmpty
+              ? null
+              : InkPainter(strokes: strokes),
+          child: strokes == null
+              ? const Center(child: Icon(Icons.draw_outlined, size: 28))
+              : strokes.isEmpty
+              ? Center(
+                  child: Text(
+                    '空手写块，点一下开始写',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                )
+              : null,
+        ),
       ),
     );
   }
@@ -288,7 +313,8 @@ class NoteInkEmbedBuilder extends EmbedBuilder {
     final style = BlockStyle.fromAttributes(node.style.attributes);
     final mobile = usesLongPressForBlockPanel(context);
     return NoteInkBlock(
-      info: infoOf(id),
+      // 纸张样式存在块属性里，跟着正文同步；没设过就是空白。
+      info: infoOf(id).copyWith(paper: readPaperStyle(node.style.attributes)),
       style: style,
       onTap: onTap == null ? null : () => onTap!(id, offset, style),
       onLongPress: onLongPress == null || !mobile

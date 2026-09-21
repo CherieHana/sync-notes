@@ -10,6 +10,7 @@ import 'package:sync_notes/ui/widgets/note_embeds.dart';
 /// 内嵌块的大小/旋转：读写正文、以及排版尺寸的计算。
 void main() {
   const imageId = '11111111-1111-1111-1111-111111111111';
+  const inkId = '22222222-2222-2222-2222-222222222222';
 
   /// 正文里第 [offset] 个位置上的样式。
   BlockStyle styleAt(Document document, int offset) {
@@ -114,6 +115,59 @@ void main() {
       expect(layout.box.width, closeTo(expectedWidth, 0.001));
       expect(layout.box.height, closeTo(expectedHeight, 0.001));
       expect(layout.box.height, greaterThan(200));
+    });
+  });
+
+  group('纸张样式', () {
+    test('循环顺序是 空白 → 横线 → 方格 → 点阵 → 空白', () {
+      expect(PaperStyle.blank.next, PaperStyle.lined);
+      expect(PaperStyle.lined.next, PaperStyle.grid);
+      expect(PaperStyle.grid.next, PaperStyle.dots);
+      expect(PaperStyle.dots.next, PaperStyle.blank);
+    });
+
+    test('写进正文再读回来，纸张样式还在', () {
+      final document = RichBody.documentFrom('标题\n[[ink:$inkId]]\n');
+      final offset = document.toPlainText().indexOf('\uFFFC');
+      expect(paperStyleAt(document, offset), PaperStyle.blank);
+
+      applyPaperStyle(document, offset, PaperStyle.grid);
+      expect(paperStyleAt(document, offset), PaperStyle.grid);
+      // 存在正文里，跟着一起同步。
+      expect(RichBody.encode(document), contains('"paper":"grid"'));
+
+      // 重新解析一遍（相当于重新打开笔记）属性还在。
+      final reopened = RichBody.documentFrom(RichBody.encode(document));
+      expect(
+        paperStyleAt(reopened, reopened.toPlainText().indexOf('\uFFFC')),
+        PaperStyle.grid,
+      );
+    });
+
+    test('换回空白就是把属性清掉，认不出来的值也当空白', () {
+      final document = RichBody.documentFrom('[[ink:$inkId]]\n');
+      final offset = document.toPlainText().indexOf('\uFFFC');
+      applyPaperStyle(document, offset, PaperStyle.dots);
+      applyPaperStyle(document, offset, PaperStyle.blank);
+
+      expect(RichBody.encode(document), isNot(contains('paper')));
+      expect(paperFromValue('不认识'), PaperStyle.blank);
+      expect(paperFromValue(null), PaperStyle.blank);
+      expect(readPaperStyle(const {}), PaperStyle.blank);
+    });
+
+    test('纸张和大小/旋转互不干扰', () {
+      final document = RichBody.documentFrom('[[ink:$inkId]]\n');
+      final offset = document.toPlainText().indexOf('\uFFFC');
+      applyBlockStyle(
+        document,
+        offset,
+        const BlockStyle(width: 240, rotate: 90),
+      );
+      applyPaperStyle(document, offset, PaperStyle.lined);
+
+      expect(styleAt(document, offset), const BlockStyle(width: 240, rotate: 90));
+      expect(paperStyleAt(document, offset), PaperStyle.lined);
     });
   });
 }

@@ -12,58 +12,14 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_quill/flutter_quill.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:sync_notes/app_services.dart';
 import 'package:sync_notes/data/local/local_store.dart';
-import 'package:sync_notes/data/sync/sync_controller.dart';
-import 'package:sync_notes/data/sync/sync_engine.dart';
-import 'package:sync_notes/main.dart';
 import 'package:sync_notes/services/note_lock.dart';
 import 'package:sync_notes/ui/note_edit_page.dart';
 import 'package:sync_notes/ui/notes_list_page.dart';
 import 'package:sync_notes/util/note_text.dart';
 
 import 'support/fake_store.dart';
-
-/// 用内存实现替换真实依赖，测试里不碰文件系统也不连网络。
-AppServices buildTestServices(String userId) {
-  final local = FakeLocalStore()..device = 'ui-test-device';
-  final remote = FakeRemoteApi();
-  final engine = SyncEngine(local: local, remote: remote);
-  final sync = SyncController(engine: engine, remote: remote, local: local);
-  return AppServices(
-    userId: userId,
-    local: local,
-    remote: remote,
-    engine: engine,
-    sync: sync,
-  );
-}
-
-Future<void> pumpApp(WidgetTester tester) async {
-  await tester.pumpWidget(
-    AuthenticatedApp(
-      userId: 'ui-test-user',
-      servicesBuilder: buildTestServices,
-    ),
-  );
-  await tester.pumpAndSettle();
-}
-
-/// 直接把依赖挂到树上，方便测试里预置数据。
-Future<void> pumpWithServices(WidgetTester tester, AppServices services) async {
-  await tester.pumpWidget(
-    AppScope(
-      services: services,
-      child: MaterialApp(
-        // 工具栏要 Quill 的本地化代理，缺了编辑页会抛异常。
-        localizationsDelegates: appLocalizationsDelegates,
-        supportedLocales: appSupportedLocales,
-        home: const NotesListPage(),
-      ),
-    ),
-  );
-  await tester.pumpAndSettle();
-}
+import 'support/test_app.dart';
 
 void main() {
   // PBKDF2 内部用 Future.delayed 让出线程，而 widget 测试的虚拟时钟不会自己
@@ -103,17 +59,7 @@ void main() {
 
   testWidgets('编辑页里敲的字会落到本地库', (tester) async {
     final services = buildTestServices('ui-test-user');
-    await tester.pumpWidget(
-      AppScope(
-        services: services,
-        child: MaterialApp(
-          localizationsDelegates: appLocalizationsDelegates,
-          supportedLocales: appSupportedLocales,
-          home: const NotesListPage(),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
+    await pumpWithServices(tester, services);
 
     await tester.tap(find.byType(FloatingActionButton));
     await tester.pumpAndSettle();

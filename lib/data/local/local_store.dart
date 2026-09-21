@@ -16,6 +16,7 @@ class LocalNote {
     required this.createdAt,
     required this.updatedAt,
     this.folderId,
+    this.pinned = false,
     this.locked = false,
     this.passphraseHash,
     this.passphraseSalt,
@@ -35,6 +36,9 @@ class LocalNote {
 
   /// 所属目录；为空表示未分类。
   final String? folderId;
+
+  /// 置顶：本机偏好，只影响列表里的排序，不同步。
+  final bool pinned;
 
   /// 是否加锁。锁只是界面层的一道门，正文始终是明文。
   final bool locked;
@@ -59,6 +63,7 @@ class LocalNote {
     bool clearDeletedAt = false,
     String? folderId,
     bool clearFolderId = false,
+    bool? pinned,
     bool? locked,
     String? passphraseHash,
     String? passphraseSalt,
@@ -75,6 +80,7 @@ class LocalNote {
       createdAt: createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       folderId: clearFolderId ? null : (folderId ?? this.folderId),
+      pinned: pinned ?? this.pinned,
       locked: locked ?? this.locked,
       passphraseHash: clearPassphrase
           ? null
@@ -93,7 +99,8 @@ class LocalNote {
   @override
   String toString() =>
       'LocalNote($id, v$version/base$baseVersion, folder=$folderId, '
-      'locked=$locked, dirty=$dirty, isNew=$isNew, deleted=$isDeleted)';
+      'pinned=$pinned, locked=$locked, dirty=$dirty, isNew=$isNew, '
+      'deleted=$isDeleted)';
 }
 
 /// 本地库里的一个目录。同步状态的含义与笔记一致。
@@ -330,6 +337,9 @@ abstract class LocalStore {
     required String? folderId,
     required DateTime now,
   });
+
+  /// 置顶/取消置顶。只改这一列：不动 updatedAt、不动脏标记、不触发同步。
+  Future<void> setNotePinned({required String id, required bool pinned});
 
   /// 设置或清除加锁状态。清除时 [hash] 和 [salt] 传空。
   Future<void> setNoteLock({

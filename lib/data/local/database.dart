@@ -17,6 +17,9 @@ class Notes extends Table {
   TextColumn get passphraseHash => text().nullable()();
   TextColumn get passphraseSalt => text().nullable()();
 
+  /// 置顶。纯粹是本机的偏好：不参与同步，也不影响 updated_at。
+  BoolColumn get pinned => boolean().withDefault(const Constant(false))();
+
   IntColumn get version => integer().withDefault(const Constant(1))();
   IntColumn get baseVersion => integer().withDefault(const Constant(0))();
   DateTimeColumn get createdAt => dateTime()();
@@ -104,7 +107,7 @@ class AppDatabase extends _$AppDatabase {
     : super(driftDatabase(name: name));
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -126,6 +129,10 @@ class AppDatabase extends _$AppDatabase {
       // v2 → v3：加手写画布。
       if (from < 3) {
         await m.createTable(noteInks);
+      }
+      // v3 → v4：加「置顶」。只加一列，不动任何已有数据。
+      if (from < 4) {
+        await m.addColumn(notes, notes.pinned);
       }
     },
   );

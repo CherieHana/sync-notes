@@ -46,6 +46,80 @@ String notePlainText(String body) {
 
 final Map<String, String> _plainTextCache = {};
 
+/// 一条还没勾上的待办。
+class UncheckedTodo {
+  const UncheckedTodo({required this.text, required this.offset});
+
+  /// 这一行的文字（前后空白已经去掉）。
+  final String text;
+
+  /// 这一行开头在正文里的位置，用来点进去时把光标放在那儿。
+  final int offset;
+}
+
+/// 正文里还没勾上的待办项。
+///
+/// Quill 把勾选框记在**行尾那个换行**的 `list: unchecked` 属性上，
+/// 所以这里按行扫一遍：换行带 unchecked 的，那一行的文字就是一条待办。
+/// 老格式的纯文本没有这个概念，返回空。
+List<UncheckedTodo> uncheckedTodos(String body) {
+  final cached = _todoCache[body];
+  if (cached != null) return cached;
+
+  final todos = <UncheckedTodo>[];
+  final ops = tryDecodeRichBody(body);
+  if (ops != null) {
+    final buffer = StringBuffer();
+    // 文档偏移：文字和图片/手写都各占一个位置，和编辑器里的光标位置对齐。
+    var offset = 0;
+    var lineStart = 0;
+
+    for (final op in ops) {
+      if (op is! Map) continue;
+      final attributes = op['attributes'];
+      final isUnchecked = attributes is Map && attributes['list'] == 'unchecked';
+      final insert = op['insert'];
+
+      if (insert is Map) {
+        buffer.write('\uFFFC');
+        offset += 1;
+        continue;
+      }
+      if (insert is! String) continue;
+
+      for (final char in insert.split('')) {
+        if (char != '\n') {
+          buffer.write(char);
+          offset += 1;
+          continue;
+        }
+        if (isUnchecked) {
+          final line = buffer.toString().trim();
+          if (line.isNotEmpty) {
+            todos.add(UncheckedTodo(text: line, offset: lineStart));
+          }
+        }
+        offset += 1;
+        lineStart = offset;
+        buffer.clear();
+      }
+    }
+  }
+
+  if (_todoCache.length > 500) _todoCache.clear();
+  _todoCache[body] = todos;
+  return todos;
+}
+
+/// 还没勾上的待办文字，只要文字不要位置。
+List<String> uncheckedItems(String body) =>
+    uncheckedTodos(body).map((todo) => todo.text).toList();
+
+/// 这一篇还有几条没勾上的待办。列表页的角标、菜单里的数量都用它。
+int uncheckedCount(String body) => uncheckedTodos(body).length;
+
+final Map<String, List<UncheckedTodo>> _todoCache = {};
+
 String _plainTextFromOps(List<dynamic> ops) {
   final buffer = StringBuffer();
   for (final op in ops) {

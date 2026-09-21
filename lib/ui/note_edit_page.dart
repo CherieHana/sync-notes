@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart';
@@ -17,6 +18,7 @@ import '../services/external_drop.dart';
 import '../services/file_import.dart';
 import '../services/image_pipeline.dart';
 import '../services/ink_strokes.dart';
+import '../services/link_target.dart';
 import '../services/note_lock.dart';
 import '../services/rich_body.dart';
 import '../util/note_text.dart';
@@ -35,9 +37,12 @@ import 'widgets/text_prompt_dialog.dart';
 /// 只从本地库读一次内容，不做实时回写：避免远处推来的版本把正在打字的
 /// 光标位置冲掉。远端变化会体现在列表上，冲突副本机制保证内容不丢。
 class NoteEditPage extends StatefulWidget {
-  const NoteEditPage({super.key, required this.noteId});
+  const NoteEditPage({super.key, required this.noteId, this.focusOffset});
 
   final String noteId;
+
+  /// 打开后把光标放到这个位置（「未完成汇总」点一条待办时用）。
+  final int? focusOffset;
 
   @override
   State<NoteEditPage> createState() => _NoteEditPageState();
@@ -216,6 +221,11 @@ class _NoteEditPageState extends State<NoteEditPage> {
     }
 
     unawaited(_resolveEmbeds(imageIdsIn(body).toSet(), inkIdsIn(body).toSet()));
+    // 「未完成汇总」点进来的：把光标落到那条待办上，并滚到可见位置。
+    final focusOffset = widget.focusOffset;
+    if (focusOffset != null && focusOffset >= 0) {
+      _moveCaretTo(focusOffset);
+    }
     if (mounted) setState(() {});
   }
 
@@ -805,12 +815,23 @@ class _NoteEditPageState extends State<NoteEditPage> {
     _inkInfo[id] = NoteInkInfo(
       strokes: result.strokes,
       aspectRatio: result.canvasWidth / result.canvasHeight,
+      paper: result.paper,
     );
+    // 刚插进去的块：把画布页里选的纸张样式也写上去。
+    final document = _controller?.document;
+    if (document != null && result.paper != PaperStyle.blank) {
+      final offset = blockOffsetOf(document, id);
+      if (offset != null) applyPaperStyle(document, offset, result.paper);
+    }
     unawaited(services.sync.sync());
   }
 
   /// 点正文里的手写块，打开全屏继续写。
-  Future<void> _openInkCanvas(String inkId) async {
+  Future<void> _openInkCanvas(
+    String inkId,
+    int offset,
+    BlockStyle style,
+  ) async {
     final services = _services;
     if (services == null) return;
 
@@ -824,30 +845,47 @@ class _NoteEditPageState extends State<NoteEditPage> {
 
     // 从整页画布回来时不让编辑器自动拿回焦点，省得输入法跟着弹出来。
     _focus.unfocus();
+    final document = _controller?.document;
+    final paperBefore = document == null
+        ? PaperStyle.blank
+        : paperStyleAt(document, offset);
     final result = await Navigator.of(context).push<InkCanvasResult>(
       MaterialPageRoute(
         builder: (_) => InkCanvasPage(
           initialStrokes: decodeInkStrokes(ink.strokes),
           canvasWidth: ink.canvasWidth,
           canvasHeight: ink.canvasHeight,
+          paper: paperBefore,
         ),
       ),
     );
     await _quietAfterFullScreenPage();
     if (result == null || !mounted) return;
 
-    await services.local.updateInk(
-      id: inkId,
-      strokes: encodeInkStrokes(result.strokes),
-      canvasWidth: result.canvasWidth,
-      canvasHeight: result.canvasHeight,
-      now: DateTime.now(),
-    );
+    if (document != null && paperBefore != result.paper) {
+      // 纸张存在块属性里，跟着正文同步。
+      applyPaperStyle(document, offset, result.paper);
+    }
+
+    final sizeChanged =
+        ink.canvasWidth != result.canvasWidth ||
+        ink.canvasHeight != result.canvasHeight;
+    final strokesChanged = ink.strokes != encodeInkStrokes(result.strokes);
+    if (sizeChanged || strokesChanged) {
+      await services.local.updateInk(
+        id: inkId,
+        strokes: encodeInkStrokes(result.strokes),
+        canvasWidth: result.canvasWidth,
+        canvasHeight: result.canvasHeight,
+        now: DateTime.now(),
+      );
+    }
     _inkInfo[inkId] = NoteInkInfo(
       strokes: result.strokes,
       aspectRatio: result.canvasWidth / result.canvasHeight,
+      paper: result.paper,
     );
-    setState(() {});
+    if (mounted) setState(() {});
     unawaited(services.sync.sync());
   }
 
@@ -1314,6 +1352,71 @@ class _NoteEditPageState extends State<NoteEditPage> {
   }
 
   // ---------------------------------------------------------------------
+  // 链接
+  // ---------------------------------------------------------------------
+
+  /// 点链接（桌面 Ctrl+点击 / 手机长按菜单里的「打开」）都会走到这里。
+  Future<void> _openLink(String url) async {
+    final error = await linkOpener(url);
+    if (error != null && mounted) _toast(error);
+  }
+
+  /// 选一个本机文件，在光标处插一条指向它的链接。
+  ///
+  /// 存的是本机路径：换台设备点开会提示文件不在这台机器上（不走服务端存储）。
+  Future<void> _insertFileLink() async {
+    final controller = _controller;
+    if (controller == null) return;
+
+    try {
+      // 走可替换的全局：测试里换成桩函数，正式运行才真的弹系统文件框。
+      final files = await filePicker(type: FileType.any);
+      final path = files.isEmpty ? null : files.first.path;
+      if (path == null || !mounted) return;
+      _insertLink(name: p.basename(path), url: fileLinkUrl(path));
+    } catch (error) {
+      _toast('选不了这个文件：$error');
+    }
+  }
+
+  /// 在光标处插入一段带链接的文字。
+  void _insertLink({required String name, required String url}) {
+    final controller = _controller;
+    if (controller == null) return;
+
+    final document = controller.document;
+    final selection = controller.selection;
+    final at = (selection.isValid ? selection.start : document.length - 1)
+        .clamp(0, document.length - 1);
+    document.insert(at, name);
+    document.format(at, name.length, LinkAttribute(url));
+    controller.updateSelection(
+      TextSelection.collapsed(offset: at + name.length),
+      ChangeSource.local,
+    );
+    unawaited(_save());
+  }
+
+  /// 插入日期：2026-09-21
+  void _insertDate() {
+    final now = DateTime.now();
+    _insertTextAtCaret(
+      '${now.year}-${_two(now.month)}-${_two(now.day)}',
+    );
+  }
+
+  /// 插入日期时间：2026-09-21 15:30
+  void _insertDateTime() {
+    final now = DateTime.now();
+    _insertTextAtCaret(
+      '${now.year}-${_two(now.month)}-${_two(now.day)} '
+      '${_two(now.hour)}:${_two(now.minute)}',
+    );
+  }
+
+  static String _two(int value) => value.toString().padLeft(2, '0');
+
+  // ---------------------------------------------------------------------
   // 界面
   // ---------------------------------------------------------------------
 
@@ -1392,6 +1495,12 @@ class _NoteEditPageState extends State<NoteEditPage> {
                   unawaited(_removeLock());
                 case 'export':
                   unawaited(_exportNoteImage());
+                case 'date':
+                  _insertDate();
+                case 'dateTime':
+                  _insertDateTime();
+                case 'fileLink':
+                  unawaited(_insertFileLink());
               }
             },
             itemBuilder: (context) => [
@@ -1403,6 +1512,10 @@ class _NoteEditPageState extends State<NoteEditPage> {
               const PopupMenuDivider(),
               const PopupMenuItem(value: 'move', child: Text('移动到…')),
               const PopupMenuItem(value: 'export', child: Text('导出为图片')),
+              const PopupMenuDivider(),
+              const PopupMenuItem(value: 'date', child: Text('插入日期')),
+              const PopupMenuItem(value: 'dateTime', child: Text('插入日期时间')),
+              const PopupMenuItem(value: 'fileLink', child: Text('插入文件链接…')),
               const PopupMenuDivider(),
               if (!note.locked)
                 const PopupMenuItem(value: 'encrypt', child: Text('加密这篇笔记'))
@@ -1485,6 +1598,12 @@ class _NoteEditPageState extends State<NoteEditPage> {
                         autoFocus: true,
                         placeholder: '写点什么…',
                         editorKey: _editorKey,
+                        // 链接：点网址打开浏览器、点文件链接交给系统默认程序。
+                        // 桌面端是 Ctrl+点击，手机上长按弹菜单（库自带，中文标签）。
+                        onLaunchUrl: (url) => unawaited(_openLink(url)),
+                        // 库默认会给不认识的文字补 https://，会把 file:///… 改成
+                        // https://file:///…；文件链接得原样放行。
+                        transformLink: normalizeLink,
                         onTapDown: _handleTapDown,
                         onSingleLongTapStart: (details, positionOf) {
                           // 长按起点记成文本位置，后续拖动都从它拉选区。
@@ -1516,8 +1635,9 @@ class _NoteEditPageState extends State<NoteEditPage> {
                           ),
                           NoteInkEmbedBuilder(
                             infoOf: _inkInfoOf,
-                            onTap: (id, offset, style) =>
-                                unawaited(_openInkCanvas(id)),
+                            onTap: (id, offset, style) => unawaited(
+                              _openInkCanvas(id, offset, style),
+                            ),
                             onLongPress: (id, offset, style) => unawaited(
                               _editBlockStyle(
                                 title: '手写画布',
@@ -1592,13 +1712,15 @@ class _NoteEditPageState extends State<NoteEditPage> {
         showSubscript: false,
         showSuperscript: false,
         showHeaderStyle: false,
-        showListNumbers: false,
-        showListBullets: false,
-        showListCheck: false,
+        // 列表与勾选框（OneNote 里最常用的那几样）。
+        showListNumbers: true,
+        showListBullets: true,
+        showListCheck: true,
         showCodeBlock: false,
         showQuote: false,
         showIndent: false,
-        showLink: false,
+        // 插入链接：选中文字 → 填网址 → 变链接。
+        showLink: true,
         showAlignmentButtons: false,
         showLineHeightButton: false,
         showSmallButton: false,

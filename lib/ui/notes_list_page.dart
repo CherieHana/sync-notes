@@ -10,6 +10,7 @@ import '../data/sync/sync_controller.dart';
 import '../services/file_import.dart';
 import '../util/note_text.dart';
 import 'note_edit_page.dart';
+import 'unfinished_page.dart';
 import 'widgets/folder_picker.dart';
 import 'widgets/text_prompt_dialog.dart';
 
@@ -30,6 +31,13 @@ class _NotesListPageState extends State<NotesListPage> {
   final TextEditingController _search = TextEditingController();
   bool _searching = false;
   String _query = '';
+
+  /// 多选模式：进入后点行是勾选，底部出现批量操作。
+  bool _multiSelect = false;
+  final Set<String> _selected = {};
+
+  /// 当前列表里显示的笔记 id。只给「全选」按钮读，不需要触发重建。
+  Set<String> _visibleIds = {};
 
   /// 当前选中的目录标签：[_allTab]、[_uncategorizedTab] 或某个目录 id。
   String _tab = _allTab;
@@ -82,10 +90,101 @@ class _NotesListPageState extends State<NotesListPage> {
   Future<void> _open(LocalNote note) async {
     final services = _services;
     await Navigator.of(context).push(
-      MaterialPageRoute<void>(builder: (_) => NoteEditPage(noteId: note.id)),
+      MaterialPageRoute<void>(
+        builder: (_) => NoteEditPage(noteId: note.id),
+      ),
     );
     if (!mounted) return;
     unawaited(services.sync.sync());
+  }
+
+  /// 置顶/取消置顶。只写本机那一列，不动更新时间、不触发同步。
+  Future<void> _togglePinned(LocalNote note) async {
+    await _services.local.setNotePinned(id: note.id, pinned: !note.pinned);
+  }
+
+  // ---------------------------------------------------------------------
+  // 多选批量操作
+  // ---------------------------------------------------------------------
+
+  void _enterMultiSelect([String? firstId]) {
+    setState(() {
+      _multiSelect = true;
+      _selected.clear();
+      if (firstId != null) _selected.add(firstId);
+    });
+  }
+
+  void _exitMultiSelect() {
+    setState(() {
+      _multiSelect = false;
+      _selected.clear();
+    });
+  }
+
+  void _toggleSelected(LocalNote note) {
+    setState(() {
+      if (!_selected.remove(note.id)) _selected.add(note.id);
+    });
+  }
+
+  /// 批量换目录。
+  Future<void> _moveSelected(List<LocalNote> notes, List<LocalFolder> folders) async {
+    final services = _services;
+    final chosen = await showFolderPicker(
+      context,
+      folders: folders,
+      currentFolderId: null,
+    );
+    if (chosen == null || !mounted) return;
+
+    final folderId = chosen == pickUncategorized ? null : chosen;
+    final now = DateTime.now();
+    for (final note in notes.where((n) => _selected.contains(n.id))) {
+      await services.local.setNoteFolder(
+        id: note.id,
+        folderId: folderId,
+        now: now,
+      );
+    }
+    unawaited(services.sync.sync());
+    _exitMultiSelect();
+  }
+
+  /// 批量删除：软删除 + 一条能整体撤销的提示条。
+  Future<void> _deleteSelected(List<LocalNote> notes) async {
+    final services = _services;
+    final targets = notes.where((n) => _selected.contains(n.id)).toList();
+    if (targets.isEmpty) return;
+
+    final now = DateTime.now();
+    for (final note in targets) {
+      await services.local.softDelete(id: note.id, now: now);
+    }
+    if (!mounted) return;
+    _exitMultiSelect();
+    unawaited(services.sync.sync());
+
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          content: Text('已删除 ${targets.length} 条笔记'),
+          duration: const Duration(seconds: 5),
+          action: SnackBarAction(
+            label: '撤销',
+            onPressed: () {
+              unawaited(() async {
+                final at = DateTime.now();
+                for (final note in targets) {
+                  await services.local.restore(id: note.id, now: at);
+                }
+                unawaited(services.sync.sync());
+              }());
+            },
+          ),
+        ),
+      );
   }
 
   /// 左滑删除，底部给 5 秒的反悔机会。
@@ -153,7 +252,9 @@ class _NotesListPageState extends State<NotesListPage> {
         Offset.zero & overlay.size,
       ),
       items: const [
+        PopupMenuItem<String>(value: 'pin', child: Text('置顶')),
         PopupMenuItem<String>(value: 'move', child: Text('移动到…')),
+        PopupMenuItem<String>(value: 'multiSelect', child: Text('多选')),
         PopupMenuItem<String>(value: 'delete', child: Text('删除')),
       ],
     );
@@ -189,6 +290,18 @@ class _NotesListPageState extends State<NotesListPage> {
               onTap: () => Navigator.of(context).pop('move'),
             ),
             ListTile(
+              leading: Icon(
+                note.pinned ? Icons.push_pin : Icons.push_pin_outlined,
+              ),
+              title: Text(note.pinned ? '取消置顶' : '置顶'),
+              onTap: () => Navigator.of(context).pop('pin'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.checklist_outlined),
+              title: const Text('多选'),
+              onTap: () => Navigator.of(context).pop('multiSelect'),
+            ),
+            ListTile(
               leading: const Icon(Icons.delete_outline),
               title: const Text('删除'),
               onTap: () => Navigator.of(context).pop('delete'),
@@ -206,10 +319,14 @@ class _NotesListPageState extends State<NotesListPage> {
     LocalNote note,
     List<LocalFolder> folders,
   ) async {
-    if (action == 'move') {
+    if (action == 'pin') {
+      await _togglePinned(note);
+    } else if (action == 'move') {
       await _moveNote(note, folders);
     } else if (action == 'delete') {
       await _delete(note);
+    } else if (action == 'multiSelect') {
+      _enterMultiSelect(note.id);
     }
   }
 
@@ -484,7 +601,16 @@ class _NotesListPageState extends State<NotesListPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: _searching
+        leading: _multiSelect
+            ? IconButton(
+                tooltip: '取消多选',
+                icon: const Icon(Icons.close),
+                onPressed: _exitMultiSelect,
+              )
+            : null,
+        title: _multiSelect
+            ? Text('已选 ${_selected.length} 项', style: const TextStyle(fontSize: 16))
+            : _searching
             ? TextField(
                 controller: _search,
                 autofocus: true,
@@ -496,6 +622,17 @@ class _NotesListPageState extends State<NotesListPage> {
               )
             : const Text('备忘录'),
         actions: [
+          if (_multiSelect) ...[
+            IconButton(
+              tooltip: '全选',
+              icon: const Icon(Icons.select_all),
+              onPressed: () => setState(() {
+                _selected
+                  ..clear()
+                  ..addAll(_visibleIds);
+              }),
+            ),
+          ] else ...[
           IconButton(
             tooltip: _searching ? '取消搜索' : '搜索',
             icon: Icon(_searching ? Icons.close : Icons.search),
@@ -518,6 +655,16 @@ class _NotesListPageState extends State<NotesListPage> {
                   unawaited(_manageFolders());
                 case 'import':
                   unawaited(_importFiles());
+                case 'multiSelect':
+                  _enterMultiSelect();
+                case 'unfinished':
+                  unawaited(
+                    Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const UnfinishedPage(),
+                      ),
+                    ),
+                  );
                 case 'signOut':
                   unawaited(_confirmSignOut());
               }
@@ -535,10 +682,22 @@ class _NotesListPageState extends State<NotesListPage> {
               const PopupMenuItem(value: 'folder', child: Text('新建目录')),
               const PopupMenuItem(value: 'manageFolders', child: Text('管理目录')),
               const PopupMenuItem(value: 'import', child: Text('导入文件')),
+              PopupMenuItem(
+                value: 'unfinished',
+                // 数量要跟着笔记变，这里直接挂一份小流。
+                child: StreamBuilder<List<LocalNote>>(
+                  stream: services.local.watchVisibleNotes(),
+                  builder: (context, snapshot) => Text(
+                    _unfinishedLabel(snapshot.data ?? const []),
+                  ),
+                ),
+              ),
+              const PopupMenuItem(value: 'multiSelect', child: Text('多选')),
               const PopupMenuDivider(),
               const PopupMenuItem(value: 'signOut', child: Text('退出登录')),
             ],
           ),
+          ],
         ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(30),
@@ -563,30 +722,74 @@ class _NotesListPageState extends State<NotesListPage> {
               }
 
               final visible = _filterNotes(notes, folders);
+              // 给「全选」按钮留一份当前列表（普通赋值，不触发重建）。
+              _visibleIds = visible.map((n) => n.id).toSet();
               return Column(
                 children: [
-                  _FolderTabs(
-                    folders: folders,
-                    selected: _tab,
-                    onSelect: (tab) => setState(() => _tab = tab),
-                    onLongPress: (folder) => unawaited(_folderActions(folder)),
-                  ),
-                  const Divider(height: 1),
+                  if (!_multiSelect) ...[
+                    _FolderTabs(
+                      folders: folders,
+                      selected: _tab,
+                      onSelect: (tab) => setState(() => _tab = tab),
+                      onLongPress: (folder) => unawaited(_folderActions(folder)),
+                    ),
+                    const Divider(height: 1),
+                  ],
                   Expanded(
                     child: visible.isEmpty
                         ? _CenteredHint(text: _emptyHint(notes))
                         : _buildList(visible, folders),
                   ),
+                  if (_multiSelect)
+                    _buildSelectionBar(visible, folders),
                 ],
               );
             },
           );
         },
       ),
-      floatingActionButton: FloatingActionButton(
-        tooltip: '新建笔记',
-        onPressed: _createNote,
-        child: const Icon(Icons.edit_outlined),
+      floatingActionButton: _multiSelect
+          ? null
+          : FloatingActionButton(
+              tooltip: '新建笔记',
+              onPressed: _createNote,
+              child: const Icon(Icons.edit_outlined),
+            ),
+    );
+  }
+
+  /// 多选模式下的底部操作条。
+  Widget _buildSelectionBar(List<LocalNote> notes, List<LocalFolder> folders) {
+    final hasSelection = _selected.isNotEmpty;
+    return Material(
+      elevation: 8,
+      color: Theme.of(context).colorScheme.surfaceContainerLow,
+      child: SafeArea(
+        top: false,
+        child: Row(
+          children: [
+            const SizedBox(width: 8),
+            Expanded(
+              child: TextButton.icon(
+                onPressed: hasSelection
+                    ? () => unawaited(_moveSelected(notes, folders))
+                    : null,
+                icon: const Icon(Icons.drive_file_move_outlined),
+                label: const Text('移动到…'),
+              ),
+            ),
+            Expanded(
+              child: TextButton.icon(
+                onPressed: hasSelection
+                    ? () => unawaited(_deleteSelected(notes))
+                    : null,
+                icon: const Icon(Icons.delete_outline),
+                label: const Text('删除'),
+              ),
+            ),
+            const SizedBox(width: 8),
+          ],
+        ),
       ),
     );
   }
@@ -615,15 +818,47 @@ class _NotesListPageState extends State<NotesListPage> {
       result = result.where((n) => n.folderId == _tab).toList();
     }
 
-    if (_query.isEmpty) return result;
+    if (_query.isNotEmpty) {
+      final query = _query.toLowerCase();
+      result = result.where((note) {
+        // 加锁且还没解锁的笔记只按标题匹配，避免搜索把正文内容漏出去。
+        final locked = note.locked && !(_services.isUnlocked(note.id));
+        if (locked) return noteTitle(note.body).toLowerCase().contains(query);
+        // 搜正文的**纯文本**，不是存储用的那串 JSON——以前那版会把
+        // insert、attributes 这种结构词也当成命中。
+        return notePlainText(note.body).toLowerCase().contains(query);
+      }).toList();
+    }
+
+    // 置顶的排最前面；置顶之间仍按更新时间倒序（上游已经排好了）。
+    if (!result.any((n) => n.pinned)) return result;
+    return [
+      ...result.where((n) => n.pinned),
+      ...result.where((n) => !n.pinned),
+    ];
+  }
+
+  /// 搜索时，列表第二行显示命中位置那句话，一眼能看出为什么匹配。
+  String _searchSnippet(LocalNote note) {
     final query = _query.toLowerCase();
-    return result.where((note) {
-      // 加锁且还没解锁的笔记只按标题匹配，避免搜索把正文内容漏出去。
-      final locked =
-          note.locked && !(_services.isUnlocked(note.id));
-      if (locked) return noteTitle(note.body).toLowerCase().contains(query);
-      return note.body.toLowerCase().contains(query);
-    }).toList();
+    if (query.isEmpty) return notePreview(note.body);
+    for (final line in notePlainText(note.body).split('\n')) {
+      final trimmed = line.trim();
+      if (trimmed.isNotEmpty && trimmed.toLowerCase().contains(query)) {
+        return trimmed.length > 60 ? '${trimmed.substring(0, 60)}…' : trimmed;
+      }
+    }
+    return notePreview(note.body);
+  }
+
+  /// 「未完成」菜单项上的文字：有未勾选项就带上条数。
+  String _unfinishedLabel(List<LocalNote> notes) {
+    var total = 0;
+    for (final note in notes) {
+      if (note.locked && !_services.isUnlocked(note.id)) continue;
+      total += uncheckedCount(note.body);
+    }
+    return total == 0 ? '未完成' : '未完成（$total）';
   }
 
   Widget _buildList(List<LocalNote> notes, List<LocalFolder> folders) {
@@ -635,9 +870,14 @@ class _NotesListPageState extends State<NotesListPage> {
       itemBuilder: (context, index) {
         final note = notes[index];
         final locked = note.locked && !_services.isUnlocked(note.id);
+        final todoCount = locked ? 0 : uncheckedCount(note.body);
+        final selected = _selected.contains(note.id);
         return Dismissible(
           key: ValueKey(note.id),
-          direction: DismissDirection.endToStart,
+          // 多选模式下别让左滑插一脚。
+          direction: _multiSelect
+              ? DismissDirection.none
+              : DismissDirection.endToStart,
           background: Container(
             alignment: Alignment.centerRight,
             padding: const EdgeInsets.only(right: 24),
@@ -654,10 +894,28 @@ class _NotesListPageState extends State<NotesListPage> {
               horizontal: 16,
               vertical: 4,
             ),
+            leading: _multiSelect
+                ? Icon(
+                    selected
+                        ? Icons.check_circle
+                        : Icons.radio_button_unchecked,
+                    color: selected
+                        ? Theme.of(context).colorScheme.primary
+                        : Theme.of(context).disabledColor,
+                  )
+                : null,
             title: Row(
               children: [
                 if (locked) ...[
                   const Icon(Icons.lock_outline, size: 14),
+                  const SizedBox(width: 6),
+                ],
+                if (note.pinned) ...[
+                  Icon(
+                    Icons.push_pin,
+                    size: 14,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
                   const SizedBox(width: 6),
                 ],
                 Expanded(
@@ -671,12 +929,26 @@ class _NotesListPageState extends State<NotesListPage> {
                     ),
                   ),
                 ),
+                if (todoCount > 0) ...[
+                  const SizedBox(width: 8),
+                  Text(
+                    '☑ $todoCount',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                  ),
+                ],
               ],
             ),
             subtitle: Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Text(
-                locked ? '已加密，打开需要口令' : notePreview(note.body),
+                locked
+                    ? '已加密，打开需要口令'
+                    : (_query.isEmpty
+                          ? notePreview(note.body)
+                          : _searchSnippet(note)),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
@@ -690,8 +962,12 @@ class _NotesListPageState extends State<NotesListPage> {
               formatListTime(note.updatedAt),
               style: Theme.of(context).textTheme.bodySmall,
             ),
-            onTap: () => _open(note),
-            onLongPress: () => unawaited(_showNoteActions(note, folders)),
+            onTap: _multiSelect
+                ? () => _toggleSelected(note)
+                : () => _open(note),
+            onLongPress: _multiSelect
+                ? () => _toggleSelected(note)
+                : () => unawaited(_showNoteActions(note, folders)),
             ),
           ),
         );

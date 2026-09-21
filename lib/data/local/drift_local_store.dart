@@ -83,6 +83,7 @@ class DriftLocalStore implements LocalStore {
             id: note.id,
             body: Value(note.body),
             folderId: Value(note.folderId),
+            pinned: Value(note.pinned),
             locked: Value(note.locked),
             passphraseHash: Value(note.passphraseHash),
             passphraseSalt: Value(note.passphraseSalt),
@@ -148,6 +149,18 @@ class DriftLocalStore implements LocalStore {
         updatedAt: Value(now),
         dirty: const Value(true),
       ),
+    );
+  }
+
+  @override
+  Future<void> setNotePinned({
+    required String id,
+    required bool pinned,
+  }) async {
+    // 只写这一列：置顶是本机偏好，改了不该让笔记显得"更新过"，
+    // 更不该被推到服务端。
+    await (_db.update(_db.notes)..where((t) => t.id.equals(id))).write(
+      NotesCompanion(pinned: Value(pinned)),
     );
   }
 
@@ -680,6 +693,7 @@ class DriftLocalStore implements LocalStore {
     id: row.id,
     body: row.body,
     folderId: row.folderId,
+    pinned: row.pinned,
     locked: row.locked,
     passphraseHash: row.passphraseHash,
     passphraseSalt: row.passphraseSalt,

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:convert';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -12,6 +13,7 @@ import 'package:sync_notes/data/local/local_store.dart';
 import 'package:sync_notes/data/sync/sync_controller.dart';
 import 'package:sync_notes/data/sync/sync_engine.dart';
 import 'package:sync_notes/main.dart';
+import 'package:sync_notes/services/block_style.dart';
 import 'package:sync_notes/services/ink_strokes.dart';
 import 'package:sync_notes/services/rich_body.dart';
 import 'package:sync_notes/ui/image_preview_page.dart';
@@ -319,7 +321,9 @@ void main() {
 
     // 块级内嵌拿到的是撑满整行的紧约束，不套 Align 画布会被拉成横宽的一条。
     final canvas = find.byWidgetPredicate(
-      (widget) => widget is CustomPaint && widget.painter is InkPainter,
+      // 纸底纹在 painter 上、笔迹在 foregroundPainter 上。
+      (widget) =>
+          widget is CustomPaint && widget.foregroundPainter is InkPainter,
     );
     expect(canvas, findsOneWidget);
     final size = tester.getSize(canvas);
@@ -333,6 +337,76 @@ void main() {
     await tester.tap(canvas);
     await tester.pumpAndSettle();
     expect(find.byType(InkCanvasPage), findsOneWidget);
+  });
+
+  testWidgets('手写块按画布上挑的纸张显示', (tester) async {
+    const inkId = '77777777-7777-7777-7777-777777777777';
+    final local = FakeLocalStore()..device = 'layout-test';
+    final at = DateTime.now();
+    local.notes['n1'] = LocalNote(
+      id: 'n1',
+      // 纸张样式就存在内嵌块的属性里，跟着正文同步，不占数据库的列。
+      body: jsonEncode([
+        {'insert': '标题\n'},
+        {
+          'insert': {'ink': inkId},
+          'attributes': {'paper': 'lined'},
+        },
+        {'insert': '\n'},
+      ]),
+      version: 1,
+      baseVersion: 1,
+      createdAt: at,
+      updatedAt: at,
+      dirty: false,
+    );
+    local.inks[inkId] = LocalInk(
+      id: inkId,
+      strokes: encodeInkStrokes(const [
+        InkStroke(
+          color: 0xFF1976D2,
+          width: 6,
+          points: [InkPoint(0.2, 0.3), InkPoint(0.7, 0.6)],
+        ),
+      ]),
+      version: 1,
+      baseVersion: 1,
+      createdAt: at,
+      updatedAt: at,
+      dirty: false,
+    );
+
+    final remote = FakeRemoteApi();
+    final engine = SyncEngine(local: local, remote: remote);
+    await tester.pumpWidget(
+      AppScope(
+        services: AppServices(
+          userId: 'layout-test',
+          local: local,
+          remote: remote,
+          engine: engine,
+          sync: SyncController(engine: engine, remote: remote, local: local),
+        ),
+        child: MaterialApp(
+          localizationsDelegates: appLocalizationsDelegates,
+          supportedLocales: appSupportedLocales,
+          home: const NoteEditPage(noteId: 'n1'),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final paper = tester
+        .widget<CustomPaint>(
+          find
+              .byWidgetPredicate(
+                (widget) =>
+                    widget is CustomPaint && widget.painter is PaperPainter,
+              )
+              .first,
+        )
+        .painter! as PaperPainter;
+    expect(paper.paper, PaperStyle.lined, reason: '正文里的手写块该按横线纸画');
   });
 
   testWidgets('插图之后接着打的字排在图片下面', (tester) async {
@@ -411,7 +485,8 @@ void main() {
     await tester.pumpAndSettle();
 
     final canvas = find.byWidgetPredicate(
-      (widget) => widget is CustomPaint && widget.painter is InkPainter,
+      (widget) =>
+          widget is CustomPaint && widget.foregroundPainter is InkPainter,
     );
     expect(canvas, findsOneWidget);
 

@@ -14,6 +14,52 @@ import 'package:flutter_quill/quill_delta.dart';
 const String blockWidthKey = 'width';
 const String blockRotateKey = 'rotate';
 
+/// 手写画布的纸张样式，同样存在内嵌块的属性里（跟着正文同步，不占新列）。
+const String blockPaperKey = 'paper';
+
+/// 画布纸张：空白、横线、方格、点阵。
+enum PaperStyle {
+  blank('blank', '空白'),
+  lined('lined', '横线'),
+  grid('grid', '方格'),
+  dots('dots', '点阵');
+
+  const PaperStyle(this.value, this.label);
+
+  final String value;
+  final String label;
+
+  /// 下一个样式，工具栏那个按钮就靠它循环。
+  PaperStyle get next =>
+      PaperStyle.values[(PaperStyle.values.indexOf(this) + 1) % PaperStyle.values.length];
+}
+
+/// 从内嵌块属性里读纸张样式，认不出来就当空白。
+PaperStyle readPaperStyle(Map<String, Attribute> attributes) =>
+    paperFromValue(attributes[blockPaperKey]?.value);
+
+PaperStyle paperFromValue(Object? value) {
+  if (value is! String) return PaperStyle.blank;
+  for (final paper in PaperStyle.values) {
+    if (paper.value == value) return paper;
+  }
+  return PaperStyle.blank;
+}
+
+/// 读正文里第 [offset] 个位置那个块的纸张样式（同一个画布可以内嵌多次，
+/// 各处的纸张样式是各自记的，所以只能按位置读）。
+PaperStyle paperStyleAt(Document document, int offset) {
+  var index = 0;
+  for (final op in document.toDelta().toList()) {
+    final length = op.length ?? 0;
+    if (offset < index + length) {
+      return paperFromValue(op.attributes?[blockPaperKey]);
+    }
+    index += length;
+  }
+  return PaperStyle.blank;
+}
+
 /// 块宽度的可调范围，逻辑像素。
 const double minBlockWidth = 80;
 const double maxBlockWidth = 600;
@@ -156,7 +202,37 @@ void applyBlockStyle(Document document, int offset, BlockStyle style) {
   );
 }
 
+/// 把纸张样式写进正文里第 [offset] 个位置的那个手写块。
+/// 空白就是"没设置"，属性会被清掉。
+void applyPaperStyle(Document document, int offset, PaperStyle paper) {
+  document.compose(
+    Delta()
+      ..retain(offset)
+      ..retain(1, {
+        blockPaperKey: paper == PaperStyle.blank ? null : paper.value,
+      }),
+    ChangeSource.local,
+  );
+}
+
 /// 正文里的字号档位 → 具体像素值。编辑器和导出长图共用同一套映射。
+/// 在正文里找某个内嵌块的位置（同一个 id 只取第一处）。找不到返回 null。
+///
+/// 刚插进去的块要靠它定位，才能接着写属性（比如画布页带回来的纸张样式）。
+int? blockOffsetOf(Document document, String id) {
+  var offset = 0;
+  for (final op in document.toDelta().toList()) {
+    if (op.isInsert) {
+      final data = op.data;
+      if (data is Map && (data['ink'] == id || data['image'] == id)) {
+        return offset;
+      }
+    }
+    offset += op.length ?? 0;
+  }
+  return null;
+}
+
 double inlineFontSizeFor(Object? value) => switch (value) {
   'small' => 12,
   'large' => 22,

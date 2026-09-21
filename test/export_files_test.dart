@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:sync_notes/services/block_style.dart';
 import 'package:sync_notes/services/export_files.dart';
 import 'package:sync_notes/services/ink_strokes.dart';
 
@@ -68,5 +69,54 @@ void main() {
       }
     }
     expect(darkPixels, greaterThan(0), reason: '导出图里应该有笔画');
+  });
+
+  /// 横线纸的一条横线所在的像素带里有多少非白像素。
+  int linePixels(img.Image image, int bandCenter) {
+    var count = 0;
+    for (var y = bandCenter - 5; y <= bandCenter + 5; y++) {
+      for (var x = 100; x < image.width - 100; x += 7) {
+        if (image.getPixel(x, y).r < 240) count++;
+      }
+    }
+    return count;
+  }
+
+  testWidgets('横线纸导出成 PNG：纸上真有横线；空白纸同一位置什么都没有', (tester) async {
+    // 行距是宽度的 1/20。1000 逻辑像素宽、2 倍像素 → 画布宽 2000，
+    // 第一条横线落在 y = 100（2000 的两倍之后是 2000/20 = 100）。
+    const firstLineY = 100;
+
+    final lined = await tester.runAsync(
+      () => renderStrokesToPng(
+        strokes: const [],
+        canvasWidth: 1000,
+        canvasHeight: 1400,
+        paper: PaperStyle.lined,
+      ),
+    );
+    final blank = await tester.runAsync(
+      () => renderStrokesToPng(
+        strokes: const [],
+        canvasWidth: 1000,
+        canvasHeight: 1400,
+      ),
+    );
+
+    final linedImage = img.decodeImage(lined!)!;
+    final blankImage = img.decodeImage(blank!)!;
+    expect(linedImage.width, 2000);
+    expect(linedImage.height, 2800);
+
+    expect(
+      linePixels(linedImage, firstLineY),
+      greaterThan(50),
+      reason: '横线纸上该有横线',
+    );
+    expect(
+      linePixels(blankImage, firstLineY),
+      0,
+      reason: '空白纸不该凭空多出横线（默认观感要和以前一样）',
+    );
   });
 }

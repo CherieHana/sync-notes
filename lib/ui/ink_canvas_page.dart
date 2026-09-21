@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../services/block_style.dart';
 import '../services/export_files.dart';
 import '../services/ink_strokes.dart';
 import 'widgets/ink_view.dart';
@@ -10,11 +11,15 @@ class InkCanvasResult {
     required this.strokes,
     required this.canvasWidth,
     required this.canvasHeight,
+    this.paper = PaperStyle.blank,
   });
 
   final List<InkStroke> strokes;
   final int canvasWidth;
   final int canvasHeight;
+
+  /// 这块画布用的纸张样式。
+  final PaperStyle paper;
 }
 
 /// 全屏手写画布。
@@ -29,6 +34,7 @@ class InkCanvasPage extends StatefulWidget {
     required this.initialStrokes,
     this.canvasWidth = inkCanvasWidth,
     this.canvasHeight = inkCanvasHeight,
+    this.paper = PaperStyle.blank,
   });
 
   final List<InkStroke> initialStrokes;
@@ -36,6 +42,9 @@ class InkCanvasPage extends StatefulWidget {
   /// 画布标称尺寸。竖屏 1000×1400、横屏 1400×1000。
   final int canvasWidth;
   final int canvasHeight;
+
+  /// 进来时用的纸张样式，改完会跟着结果带回去。
+  final PaperStyle paper;
 
   @override
   State<InkCanvasPage> createState() => _InkCanvasPageState();
@@ -69,6 +78,7 @@ class _InkCanvasPageState extends State<InkCanvasPage> {
 
   late int _canvasWidth = widget.canvasWidth;
   late int _canvasHeight = widget.canvasHeight;
+  late PaperStyle _paper = widget.paper;
 
   /// 画布本体的 key：坐标换算要拿它的 RenderBox，缩放平移之后落笔才准。
   final GlobalKey _canvasKey = GlobalKey();
@@ -269,6 +279,7 @@ class _InkCanvasPageState extends State<InkCanvasPage> {
         strokes: _strokes,
         canvasWidth: _canvasWidth,
         canvasHeight: _canvasHeight,
+        paper: _paper,
       );
       if (!mounted) return;
       if (bytes == null) {
@@ -321,6 +332,7 @@ class _InkCanvasPageState extends State<InkCanvasPage> {
                 strokes: _strokes,
                 canvasWidth: _canvasWidth,
                 canvasHeight: _canvasHeight,
+                paper: _paper,
               ),
             ),
             child: const Text('完成'),
@@ -370,7 +382,14 @@ class _InkCanvasPageState extends State<InkCanvasPage> {
                             ),
                             clipBehavior: Clip.antiAlias,
                             child: CustomPaint(
-                              painter: InkPainter(strokes: _visibleStrokes),
+                              // 纸在下面，笔迹在上面。
+                              painter: PaperPainter(
+                                paper: _paper,
+                                background: theme.colorScheme.surface,
+                              ),
+                              foregroundPainter: InkPainter(
+                                strokes: _visibleStrokes,
+                              ),
                               size: Size.infinite,
                             ),
                           ),
@@ -484,6 +503,11 @@ class _InkCanvasPageState extends State<InkCanvasPage> {
               size: 18,
             ),
             label: Text(_canvasHeight > _canvasWidth ? '竖屏' : '横屏'),
+          ),
+          OutlinedButton.icon(
+            onPressed: () => setState(() => _paper = _paper.next),
+            icon: const Icon(Icons.grid_on_outlined, size: 18),
+            label: Text('纸张：${_paper.label}'),
           ),
           IconButton(
             tooltip: _panMode ? '回到画线' : '移动画布',

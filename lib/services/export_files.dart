@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 
 import '../ui/widgets/ink_view.dart';
+import 'block_style.dart';
 import 'ink_strokes.dart';
 
 /// 让用户挑个地方把文件存下去。
@@ -55,6 +56,7 @@ Future<Uint8List?> renderStrokesToPng({
   required List<InkStroke> strokes,
   required int canvasWidth,
   required int canvasHeight,
+  PaperStyle paper = PaperStyle.blank,
   double pixelRatio = 2,
 }) async {
   if (canvasWidth <= 0 || canvasHeight <= 0) return null;
@@ -68,6 +70,8 @@ Future<Uint8List?> renderStrokesToPng({
     Rect.fromLTWH(0, 0, width, height),
     Paint()..color = Colors.white,
   );
+  // 纸张底纹跟着画，导出的和屏幕上看到的一致。
+  paintPaper(canvas, Size(width, height), paper);
   InkPainter(strokes: strokes).paint(canvas, Size(width, height));
 
   final picture = recorder.endRecording();

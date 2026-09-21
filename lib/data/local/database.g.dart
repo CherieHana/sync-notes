@@ -73,6 +73,19 @@ class $NotesTable extends Notes with TableInfo<$NotesTable, Note> {
     type: DriftSqlType.string,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _pinnedMeta = const VerificationMeta('pinned');
+  @override
+  late final GeneratedColumn<bool> pinned = GeneratedColumn<bool>(
+    'pinned',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("pinned" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
   static const VerificationMeta _versionMeta = const VerificationMeta(
     'version',
   );
@@ -187,6 +200,7 @@ class $NotesTable extends Notes with TableInfo<$NotesTable, Note> {
     locked,
     passphraseHash,
     passphraseSalt,
+    pinned,
     version,
     baseVersion,
     createdAt,
@@ -248,6 +262,12 @@ class $NotesTable extends Notes with TableInfo<$NotesTable, Note> {
           data['passphrase_salt']!,
           _passphraseSaltMeta,
         ),
+      );
+    }
+    if (data.containsKey('pinned')) {
+      context.handle(
+        _pinnedMeta,
+        pinned.isAcceptableOrUnknown(data['pinned']!, _pinnedMeta),
       );
     }
     if (data.containsKey('version')) {
@@ -350,6 +370,10 @@ class $NotesTable extends Notes with TableInfo<$NotesTable, Note> {
         DriftSqlType.string,
         data['${effectivePrefix}passphrase_salt'],
       ),
+      pinned: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}pinned'],
+      )!,
       version: attachedDatabase.typeMapping.read(
         DriftSqlType.int,
         data['${effectivePrefix}version'],
@@ -406,6 +430,9 @@ class Note extends DataClass implements Insertable<Note> {
   final bool locked;
   final String? passphraseHash;
   final String? passphraseSalt;
+
+  /// 置顶。纯粹是本机的偏好：不参与同步，也不影响 updated_at。
+  final bool pinned;
   final int version;
   final int baseVersion;
   final DateTime createdAt;
@@ -422,6 +449,7 @@ class Note extends DataClass implements Insertable<Note> {
     required this.locked,
     this.passphraseHash,
     this.passphraseSalt,
+    required this.pinned,
     required this.version,
     required this.baseVersion,
     required this.createdAt,
@@ -447,6 +475,7 @@ class Note extends DataClass implements Insertable<Note> {
     if (!nullToAbsent || passphraseSalt != null) {
       map['passphrase_salt'] = Variable<String>(passphraseSalt);
     }
+    map['pinned'] = Variable<bool>(pinned);
     map['version'] = Variable<int>(version);
     map['base_version'] = Variable<int>(baseVersion);
     map['created_at'] = Variable<DateTime>(createdAt);
@@ -479,6 +508,7 @@ class Note extends DataClass implements Insertable<Note> {
       passphraseSalt: passphraseSalt == null && nullToAbsent
           ? const Value.absent()
           : Value(passphraseSalt),
+      pinned: Value(pinned),
       version: Value(version),
       baseVersion: Value(baseVersion),
       createdAt: Value(createdAt),
@@ -509,6 +539,7 @@ class Note extends DataClass implements Insertable<Note> {
       locked: serializer.fromJson<bool>(json['locked']),
       passphraseHash: serializer.fromJson<String?>(json['passphraseHash']),
       passphraseSalt: serializer.fromJson<String?>(json['passphraseSalt']),
+      pinned: serializer.fromJson<bool>(json['pinned']),
       version: serializer.fromJson<int>(json['version']),
       baseVersion: serializer.fromJson<int>(json['baseVersion']),
       createdAt: serializer.fromJson<DateTime>(json['createdAt']),
@@ -530,6 +561,7 @@ class Note extends DataClass implements Insertable<Note> {
       'locked': serializer.toJson<bool>(locked),
       'passphraseHash': serializer.toJson<String?>(passphraseHash),
       'passphraseSalt': serializer.toJson<String?>(passphraseSalt),
+      'pinned': serializer.toJson<bool>(pinned),
       'version': serializer.toJson<int>(version),
       'baseVersion': serializer.toJson<int>(baseVersion),
       'createdAt': serializer.toJson<DateTime>(createdAt),
@@ -549,6 +581,7 @@ class Note extends DataClass implements Insertable<Note> {
     bool? locked,
     Value<String?> passphraseHash = const Value.absent(),
     Value<String?> passphraseSalt = const Value.absent(),
+    bool? pinned,
     int? version,
     int? baseVersion,
     DateTime? createdAt,
@@ -569,6 +602,7 @@ class Note extends DataClass implements Insertable<Note> {
     passphraseSalt: passphraseSalt.present
         ? passphraseSalt.value
         : this.passphraseSalt,
+    pinned: pinned ?? this.pinned,
     version: version ?? this.version,
     baseVersion: baseVersion ?? this.baseVersion,
     createdAt: createdAt ?? this.createdAt,
@@ -593,6 +627,7 @@ class Note extends DataClass implements Insertable<Note> {
       passphraseSalt: data.passphraseSalt.present
           ? data.passphraseSalt.value
           : this.passphraseSalt,
+      pinned: data.pinned.present ? data.pinned.value : this.pinned,
       version: data.version.present ? data.version.value : this.version,
       baseVersion: data.baseVersion.present
           ? data.baseVersion.value
@@ -620,6 +655,7 @@ class Note extends DataClass implements Insertable<Note> {
           ..write('locked: $locked, ')
           ..write('passphraseHash: $passphraseHash, ')
           ..write('passphraseSalt: $passphraseSalt, ')
+          ..write('pinned: $pinned, ')
           ..write('version: $version, ')
           ..write('baseVersion: $baseVersion, ')
           ..write('createdAt: $createdAt, ')
@@ -641,6 +677,7 @@ class Note extends DataClass implements Insertable<Note> {
     locked,
     passphraseHash,
     passphraseSalt,
+    pinned,
     version,
     baseVersion,
     createdAt,
@@ -661,6 +698,7 @@ class Note extends DataClass implements Insertable<Note> {
           other.locked == this.locked &&
           other.passphraseHash == this.passphraseHash &&
           other.passphraseSalt == this.passphraseSalt &&
+          other.pinned == this.pinned &&
           other.version == this.version &&
           other.baseVersion == this.baseVersion &&
           other.createdAt == this.createdAt &&
@@ -679,6 +717,7 @@ class NotesCompanion extends UpdateCompanion<Note> {
   final Value<bool> locked;
   final Value<String?> passphraseHash;
   final Value<String?> passphraseSalt;
+  final Value<bool> pinned;
   final Value<int> version;
   final Value<int> baseVersion;
   final Value<DateTime> createdAt;
@@ -696,6 +735,7 @@ class NotesCompanion extends UpdateCompanion<Note> {
     this.locked = const Value.absent(),
     this.passphraseHash = const Value.absent(),
     this.passphraseSalt = const Value.absent(),
+    this.pinned = const Value.absent(),
     this.version = const Value.absent(),
     this.baseVersion = const Value.absent(),
     this.createdAt = const Value.absent(),
@@ -714,6 +754,7 @@ class NotesCompanion extends UpdateCompanion<Note> {
     this.locked = const Value.absent(),
     this.passphraseHash = const Value.absent(),
     this.passphraseSalt = const Value.absent(),
+    this.pinned = const Value.absent(),
     this.version = const Value.absent(),
     this.baseVersion = const Value.absent(),
     required DateTime createdAt,
@@ -734,6 +775,7 @@ class NotesCompanion extends UpdateCompanion<Note> {
     Expression<bool>? locked,
     Expression<String>? passphraseHash,
     Expression<String>? passphraseSalt,
+    Expression<bool>? pinned,
     Expression<int>? version,
     Expression<int>? baseVersion,
     Expression<DateTime>? createdAt,
@@ -752,6 +794,7 @@ class NotesCompanion extends UpdateCompanion<Note> {
       if (locked != null) 'locked': locked,
       if (passphraseHash != null) 'passphrase_hash': passphraseHash,
       if (passphraseSalt != null) 'passphrase_salt': passphraseSalt,
+      if (pinned != null) 'pinned': pinned,
       if (version != null) 'version': version,
       if (baseVersion != null) 'base_version': baseVersion,
       if (createdAt != null) 'created_at': createdAt,
@@ -772,6 +815,7 @@ class NotesCompanion extends UpdateCompanion<Note> {
     Value<bool>? locked,
     Value<String?>? passphraseHash,
     Value<String?>? passphraseSalt,
+    Value<bool>? pinned,
     Value<int>? version,
     Value<int>? baseVersion,
     Value<DateTime>? createdAt,
@@ -790,6 +834,7 @@ class NotesCompanion extends UpdateCompanion<Note> {
       locked: locked ?? this.locked,
       passphraseHash: passphraseHash ?? this.passphraseHash,
       passphraseSalt: passphraseSalt ?? this.passphraseSalt,
+      pinned: pinned ?? this.pinned,
       version: version ?? this.version,
       baseVersion: baseVersion ?? this.baseVersion,
       createdAt: createdAt ?? this.createdAt,
@@ -823,6 +868,9 @@ class NotesCompanion extends UpdateCompanion<Note> {
     }
     if (passphraseSalt.present) {
       map['passphrase_salt'] = Variable<String>(passphraseSalt.value);
+    }
+    if (pinned.present) {
+      map['pinned'] = Variable<bool>(pinned.value);
     }
     if (version.present) {
       map['version'] = Variable<int>(version.value);
@@ -866,6 +914,7 @@ class NotesCompanion extends UpdateCompanion<Note> {
           ..write('locked: $locked, ')
           ..write('passphraseHash: $passphraseHash, ')
           ..write('passphraseSalt: $passphraseSalt, ')
+          ..write('pinned: $pinned, ')
           ..write('version: $version, ')
           ..write('baseVersion: $baseVersion, ')
           ..write('createdAt: $createdAt, ')
@@ -3119,6 +3168,7 @@ typedef $$NotesTableCreateCompanionBuilder = NotesCompanion Function({
   Value<bool> locked,
   Value<String?> passphraseHash,
   Value<String?> passphraseSalt,
+  Value<bool> pinned,
   Value<int> version,
   Value<int> baseVersion,
   required DateTime createdAt,
@@ -3137,6 +3187,7 @@ typedef $$NotesTableUpdateCompanionBuilder = NotesCompanion Function({
   Value<bool> locked,
   Value<String?> passphraseHash,
   Value<String?> passphraseSalt,
+  Value<bool> pinned,
   Value<int> version,
   Value<int> baseVersion,
   Value<DateTime> createdAt,
@@ -3184,6 +3235,11 @@ class $$NotesTableFilterComposer extends Composer<_$AppDatabase, $NotesTable> {
 
   ColumnFilters<String> get passphraseSalt => $composableBuilder(
     column: $table.passphraseSalt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get pinned => $composableBuilder(
+    column: $table.pinned,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -3272,6 +3328,11 @@ class $$NotesTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<bool> get pinned => $composableBuilder(
+    column: $table.pinned,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<int> get version => $composableBuilder(
     column: $table.version,
     builder: (column) => ColumnOrderings(column),
@@ -3349,6 +3410,9 @@ class $$NotesTableAnnotationComposer
     builder: (column) => column,
   );
 
+  GeneratedColumn<bool> get pinned =>
+      $composableBuilder(column: $table.pinned, builder: (column) => column);
+
   GeneratedColumn<int> get version =>
       $composableBuilder(column: $table.version, builder: (column) => column);
 
@@ -3417,6 +3481,7 @@ class $$NotesTableTableManager
                 Value<bool> locked = const Value.absent(),
                 Value<String?> passphraseHash = const Value.absent(),
                 Value<String?> passphraseSalt = const Value.absent(),
+                Value<bool> pinned = const Value.absent(),
                 Value<int> version = const Value.absent(),
                 Value<int> baseVersion = const Value.absent(),
                 Value<DateTime> createdAt = const Value.absent(),
@@ -3434,6 +3499,7 @@ class $$NotesTableTableManager
                 locked: locked,
                 passphraseHash: passphraseHash,
                 passphraseSalt: passphraseSalt,
+                pinned: pinned,
                 version: version,
                 baseVersion: baseVersion,
                 createdAt: createdAt,
@@ -3453,6 +3519,7 @@ class $$NotesTableTableManager
                 Value<bool> locked = const Value.absent(),
                 Value<String?> passphraseHash = const Value.absent(),
                 Value<String?> passphraseSalt = const Value.absent(),
+                Value<bool> pinned = const Value.absent(),
                 Value<int> version = const Value.absent(),
                 Value<int> baseVersion = const Value.absent(),
                 required DateTime createdAt,
@@ -3470,6 +3537,7 @@ class $$NotesTableTableManager
                 locked: locked,
                 passphraseHash: passphraseHash,
                 passphraseSalt: passphraseSalt,
+                pinned: pinned,
                 version: version,
                 baseVersion: baseVersion,
                 createdAt: createdAt,

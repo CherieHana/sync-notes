@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:sync_notes/services/block_style.dart';
 import 'package:sync_notes/services/ink_strokes.dart';
 import 'package:sync_notes/ui/ink_canvas_page.dart';
 import 'package:sync_notes/ui/widgets/ink_view.dart';
@@ -62,14 +63,17 @@ void main() {
 
   List<InkStroke> paintedStrokes(WidgetTester tester) {
     // 画布页里还有别的 CustomPaint（水波纹之类），只认画笔迹那个。
+    // 纸底纹在 painter 上、笔迹在 foregroundPainter 上，所以认后者。
     final paint = tester.widget<CustomPaint>(
       find
           .byWidgetPredicate(
-            (widget) => widget is CustomPaint && widget.painter is InkPainter,
+            (widget) =>
+                widget is CustomPaint &&
+                widget.foregroundPainter is InkPainter,
           )
           .first,
     );
-    return (paint.painter! as InkPainter).strokes;
+    return (paint.foregroundPainter! as InkPainter).strokes;
   }
 
   testWidgets('切换横竖屏：画布比例变了，笔迹跟着转 90°', (tester) async {
@@ -108,6 +112,37 @@ void main() {
     await tester.tap(find.byTooltip('适应画布'));
     await tester.pumpAndSettle();
     expect(find.text('100%'), findsOneWidget);
+  });
+
+  testWidgets('纸张按钮循环切换，切出来的样式跟着结果带回去', (tester) async {
+    final result = await openCanvas(tester);
+    expect(find.text('纸张：空白'), findsOneWidget);
+
+    await tester.tap(find.text('纸张：空白'));
+    await tester.pumpAndSettle();
+    expect(find.text('纸张：横线'), findsOneWidget);
+
+    // 纸的样式进了画布那个 painter，屏幕上真换了纸。
+    PaperPainter paperOnScreen() => tester
+        .widget<CustomPaint>(
+          find
+              .byWidgetPredicate(
+                (widget) =>
+                    widget is CustomPaint && widget.painter is PaperPainter,
+              )
+              .first,
+        )
+        .painter! as PaperPainter;
+    expect(paperOnScreen().paper, PaperStyle.lined);
+
+    // 再点两下到点阵，然后往回点一下回到方格。
+    await tester.tap(find.text('纸张：横线'));
+    await tester.pumpAndSettle();
+    expect(paperOnScreen().paper, PaperStyle.grid);
+
+    await tester.tap(find.text('完成'));
+    await tester.pumpAndSettle();
+    expect(result()!.paper, PaperStyle.grid, reason: '纸张样式要跟着结果带回去');
   });
 
   testWidgets('放大之后落笔位置依然准：同一个屏幕点更靠近画布中心', (tester) async {
