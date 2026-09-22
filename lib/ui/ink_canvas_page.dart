@@ -553,10 +553,11 @@ class _InkCanvasPageState extends State<InkCanvasPage> {
           ),
           IconButton(
             tooltip: _panMode ? '回到画线' : '移动画布',
-            onPressed: () => setState(() {
-              _panMode = !_panMode;
-              if (!_panMode) _offset = Offset.zero;
-            }),
+            // 只切模式，别动画面位置。
+            //
+            // 这里以前有一句「退出移动模式就把偏移清零」，等于每次拖完、
+            // 一点回画笔，画布就自己弹回正中——放大之后想看的角落全白拖了。
+            onPressed: () => setState(() => _panMode = !_panMode),
             isSelected: _panMode,
             icon: const Icon(Icons.open_with),
             selectedIcon: const Icon(Icons.open_with),

@@ -63,6 +63,14 @@ void main() {
       )
       .aspectRatio;
 
+  /// 画布本体在屏幕上的位置：放大、拖动、关掉移动模式，都看这个矩形变没变。
+  Rect canvasRect(WidgetTester tester) => tester.getRect(
+    find.descendant(
+      of: find.byType(InkCanvasPage),
+      matching: find.byType(AspectRatio),
+    ),
+  );
+
   List<InkStroke> paintedStrokes(WidgetTester tester) {
     // 画布页里还有别的 CustomPaint（水波纹之类），只认画笔迹那个。
     // 纸底纹在 painter 上、笔迹在 foregroundPainter 上，所以认后者。
@@ -148,14 +156,6 @@ void main() {
   });
 
   testWidgets('放大并拖动过的画布位置会被记住，再进来还停在那儿', (tester) async {
-    // 画布本体在屏幕上的位置：拖动之后它就该偏过去。
-    Rect canvasRect(WidgetTester tester) => tester.getRect(
-      find.descendant(
-        of: find.byType(InkCanvasPage),
-        matching: find.byType(AspectRatio),
-      ),
-    );
-
     await openCanvas(tester, viewKey: 'ink-1');
 
     // 放大到 150%，再切到「移动画布」把它拖开一点。
@@ -186,6 +186,36 @@ void main() {
       afterDrag.center,
       reason: '画布位置该记住，不该弹回正中',
     );
+  });
+
+  testWidgets('关掉「移动画布」回到画笔，画布不会自己弹回正中', (tester) async {
+    await openCanvas(tester);
+
+    await tester.tap(find.byTooltip('放大'));
+    await tester.tap(find.byTooltip('放大'));
+    await tester.pumpAndSettle();
+    final centered = canvasRect(tester);
+
+    await tester.tap(find.byTooltip('移动画布'));
+    await tester.pumpAndSettle();
+    await tester.dragFrom(centered.center, const Offset(-50, 40));
+    await tester.pumpAndSettle();
+    final moved = canvasRect(tester);
+    expect(
+      moved.center - centered.center,
+      isNot(Offset.zero),
+      reason: '「移动画布」应该真的把画布挪走',
+    );
+
+    // 切回画笔：位置得留着，不然放大之后想看的角落全白拖了。
+    await tester.tap(find.byTooltip('回到画线'));
+    await tester.pumpAndSettle();
+    expect(
+      canvasRect(tester).center,
+      moved.center,
+      reason: '关掉移动模式把画布弹回了正中',
+    );
+    expect(find.text('150%'), findsOneWidget, reason: '放大倍数也不该被重置');
   });
 
   testWidgets('放大之后落笔位置依然准：同一个屏幕点更靠近画布中心', (tester) async {
