@@ -2,7 +2,6 @@ import 'dart:convert';
 
 import 'package:cross_file/cross_file.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart';
@@ -122,7 +121,11 @@ void main() {
       filePicker = systemFilePicker;
     });
 
-    Future<AppServices> pumpEditor(WidgetTester tester, String body) async {
+    Future<AppServices> pumpEditor(
+      WidgetTester tester,
+      String body, {
+      TargetPlatform platform = TargetPlatform.windows,
+    }) async {
       final local = FakeLocalStore()..device = 'link-test';
       await local.createNote(
         localNote(
@@ -148,6 +151,9 @@ void main() {
           child: MaterialApp(
             localizationsDelegates: appLocalizationsDelegates,
             supportedLocales: appSupportedLocales,
+            // 「点一下链接是打开它还是放光标」按平台分岔：电脑上打开，
+            // 手机上留给放光标。测试里直接指定平台，不用去改全局变量。
+            theme: ThemeData(platform: platform),
             home: const NoteEditPage(noteId: 'n1'),
           ),
         ),
@@ -171,69 +177,77 @@ void main() {
       await tester.tapAt(rect.topLeft + Offset(4, rect.height / 2));
     }
 
-    /// Ctrl+点击。按下 Ctrl 之后要等一帧：链接的点击识别器是这时候才装上的。
-    Future<void> ctrlTapLink(WidgetTester tester, String text) async {
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    /// 长按链接文字，同样要按在字上而不是整行的空白处。
+    Future<void> longPressLink(WidgetTester tester, String text) async {
+      final rect = tester.getRect(find.text(text, findRichText: true));
+      final gesture = await tester.startGesture(
+        rect.topLeft + Offset(4, rect.height / 2),
+      );
+      await tester.pump(const Duration(milliseconds: 700));
+      await gesture.up();
       await tester.pumpAndSettle();
-      await tapLink(tester, text);
-      await tester.pumpAndSettle();
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
     }
 
-    /// 库只在桌面平台上认 Ctrl+点击。框架不允许测试结束时还留着这个覆盖值，
-    /// 所以在测试体里自己收尾（不能放 addTearDown，那时检查已经跑过了）。
-    Future<void> asDesktop(Future<void> Function() body) async {
-      debugDefaultTargetPlatformOverride = TargetPlatform.windows;
-      try {
-        await body();
-      } finally {
-        debugDefaultTargetPlatformOverride = null;
-      }
-    }
+    testWidgets('电脑上点一下网址就打开浏览器', (tester) async {
+      await pumpEditor(tester, bodyWithLink('官网', 'https://example.com/page'));
 
-    testWidgets('电脑上 Ctrl+点击网址才打开浏览器，点一下只是放光标', (tester) async {
-      await asDesktop(() async {
-        await pumpEditor(
-          tester,
-          bodyWithLink('官网', 'https://example.com/page'),
-        );
+      await tapLink(tester, '官网');
+      await tester.pumpAndSettle();
 
-        // 直接点：不打开，光标放上去而已。
-        await tapLink(tester, '官网');
-        await tester.pumpAndSettle();
-        expect(opened, isEmpty, reason: '电脑上点一下不该跳走');
-
-        // Ctrl+点击：走浏览器分支。
-        await ctrlTapLink(tester, '官网');
-
-        expect(opened.single, 'https://example.com/page');
-      });
+      expect(opened.single, 'https://example.com/page');
     });
 
     testWidgets('文件链接走的是打开本机文件那条路', (tester) async {
       const path = r'C:\Users\me\报告.pdf';
-      await asDesktop(() async {
-        await pumpEditor(tester, bodyWithLink('报告.pdf', fileLinkUrl(path)));
+      await pumpEditor(tester, bodyWithLink('报告.pdf', fileLinkUrl(path)));
 
-        await ctrlTapLink(tester, '报告.pdf');
+      await tapLink(tester, '报告.pdf');
+      await tester.pumpAndSettle();
 
-        expect(opened.single, fileLinkUrl(path));
-        expect(classifyLink(opened.single), LinkKind.file);
-      });
+      expect(opened.single, fileLinkUrl(path));
+      expect(classifyLink(opened.single), LinkKind.file);
     });
 
     testWidgets('打不开的时候把原因说给用户听', (tester) async {
       openError = '这个文件只在那台设备上有';
 
-      await asDesktop(() async {
-        await pumpEditor(
-          tester,
-          bodyWithLink('报告.pdf', fileLinkUrl(r'C:\a.pdf')),
-        );
-        await ctrlTapLink(tester, '报告.pdf');
+      await pumpEditor(tester, bodyWithLink('报告.pdf', fileLinkUrl(r'C:\a.pdf')));
+      await tapLink(tester, '报告.pdf');
+      await tester.pumpAndSettle();
 
-        expect(find.text('这个文件只在那台设备上有'), findsOneWidget);
-      });
+      expect(find.text('这个文件只在那台设备上有'), findsOneWidget);
+    });
+
+    testWidgets('手机上点链接只是放光标，不打开（长按才弹菜单）', (tester) async {
+      await pumpEditor(
+        tester,
+        bodyWithLink('官网', 'https://example.com/page'),
+        platform: TargetPlatform.android,
+      );
+
+      await tapLink(tester, '官网');
+      await tester.pumpAndSettle();
+
+      expect(opened, isEmpty, reason: '手机上点一下要留给放光标');
+    });
+
+    testWidgets('手机上长按链接弹出中文菜单，选「打开链接」才打开', (tester) async {
+      await pumpEditor(
+        tester,
+        bodyWithLink('官网', 'https://example.com/page'),
+        platform: TargetPlatform.android,
+      );
+
+      await longPressLink(tester, '官网');
+
+      expect(find.text('打开链接'), findsOneWidget);
+      expect(find.text('复制链接'), findsOneWidget);
+      expect(find.text('删除链接'), findsOneWidget);
+      expect(opened, isEmpty, reason: '光是弹菜单不该打开');
+
+      await tester.tap(find.text('打开链接'));
+      await tester.pumpAndSettle();
+      expect(opened.single, 'https://example.com/page');
     });
 
     testWidgets('插入日期：写进当天的年月日', (tester) async {
@@ -291,6 +305,42 @@ void main() {
       expect(find.byIcon(Icons.format_list_numbered), findsOneWidget);
       expect(find.byIcon(Icons.check_box), findsOneWidget);
       expect(find.byIcon(Icons.link), findsOneWidget);
+    });
+
+    testWidgets('插入链接的弹框：填个光秃秃的域名也能点确定', (tester) async {
+      await pumpEditor(tester, '标题');
+
+      // 选中「标题」，链接就包住这段字。
+      final editor = tester.widget<QuillEditor>(find.byType(QuillEditor));
+      editor.controller.updateSelection(
+        const TextSelection(baseOffset: 0, extentOffset: 2),
+        ChangeSource.local,
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byIcon(Icons.link));
+      await tester.pumpAndSettle();
+
+      // 两个输入框：显示文字（已经带上选中的「标题」）和网址。
+      await tester.enterText(find.byType(TextFormField).last, 'www.example.com');
+      await tester.pumpAndSettle();
+
+      final okButton = find.descendant(
+        of: find.byType(AlertDialog),
+        matching: find.byType(TextButton),
+      );
+      expect(
+        tester.widget<TextButton>(okButton).onPressed,
+        isNotNull,
+        reason: '填了网址，「确定」不该还是灰的（上一版点了没反应就是这个原因）',
+      );
+
+      await tester.tap(okButton);
+      await tester.pumpAndSettle();
+
+      final link = linksIn(editor.controller.document).single;
+      expect(link.text, '标题');
+      expect(link.link, 'www.example.com');
     });
   });
 }

@@ -59,11 +59,18 @@ Size noteImageAutoSize(double aspectRatio) => autoBlockSize(
 Size noteInkAutoSize(double aspectRatio) =>
     autoBlockSize(aspectRatio: aspectRatio, maxWidth: 300, maxHeight: 260);
 
-/// 手机/平板才用长按开面板；电脑上长按鼠标反直觉，那边走右键。
-bool usesLongPressForBlockPanel(BuildContext context) {
+/// 是不是手机/平板那类触屏平台。
+///
+/// 块面板和链接的点击行为都按它分岔：触屏上点一下要留给「放光标」，
+/// 电脑上点一下就该有反应。
+bool isMobilePlatform(BuildContext context) {
   final platform = Theme.of(context).platform;
   return platform == TargetPlatform.android || platform == TargetPlatform.iOS;
 }
+
+/// 手机/平板才用长按开面板；电脑上长按鼠标反直觉，那边走右键。
+bool usesLongPressForBlockPanel(BuildContext context) =>
+    isMobilePlatform(context);
 
 /// 一个内嵌块的通用外壳：按大小/旋转摆好位置，套上点击和长按手势。
 ///

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_quill/flutter_quill.dart';
 
 import '../util/note_text.dart';
+import 'auto_link.dart';
 
 /// 富文本正文的读写。
 ///
@@ -14,7 +15,11 @@ class RichBody {
   /// 把正文转成编辑器用的文档。老格式会自动转换。
   static Document documentFrom(String body) {
     final ops = tryDecodeRichBody(body);
-    return Document.fromJson(ops ?? opsFromPlainText(body));
+    final document = Document.fromJson(ops ?? opsFromPlainText(body));
+    // 打字时自动认网址。库自带的那两条规则只认带 http(s):// 的，
+    // 光秃秃的域名（www.example.com）得靠我们自己的规则。
+    document.setCustomRules(const [AutoLinkBareDomainRule()]);
+    return document;
   }
 
   /// 把编辑器里的文档存回正文。

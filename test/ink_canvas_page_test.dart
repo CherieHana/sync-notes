@@ -21,6 +21,7 @@ void main() {
     int canvasWidth = inkCanvasWidth,
     int canvasHeight = inkCanvasHeight,
     List<InkStroke> initial = strokes,
+    String? viewKey,
   }) async {
     InkCanvasResult? popped;
     await tester.pumpWidget(
@@ -36,6 +37,7 @@ void main() {
                         initialStrokes: initial,
                         canvasWidth: canvasWidth,
                         canvasHeight: canvasHeight,
+                        viewKey: viewKey,
                       ),
                     ),
                   );
@@ -143,6 +145,47 @@ void main() {
     await tester.tap(find.text('完成'));
     await tester.pumpAndSettle();
     expect(result()!.paper, PaperStyle.grid, reason: '纸张样式要跟着结果带回去');
+  });
+
+  testWidgets('放大并拖动过的画布位置会被记住，再进来还停在那儿', (tester) async {
+    // 画布本体在屏幕上的位置：拖动之后它就该偏过去。
+    Rect canvasRect(WidgetTester tester) => tester.getRect(
+      find.descendant(
+        of: find.byType(InkCanvasPage),
+        matching: find.byType(AspectRatio),
+      ),
+    );
+
+    await openCanvas(tester, viewKey: 'ink-1');
+
+    // 放大到 150%，再切到「移动画布」把它拖开一点。
+    await tester.tap(find.byTooltip('放大'));
+    await tester.tap(find.byTooltip('放大'));
+    await tester.pumpAndSettle();
+    final beforeDrag = canvasRect(tester);
+
+    await tester.tap(find.byTooltip('移动画布'));
+    await tester.pumpAndSettle();
+    await tester.dragFrom(beforeDrag.center, const Offset(40, 30));
+    await tester.pumpAndSettle();
+    final afterDrag = canvasRect(tester);
+    expect(
+      afterDrag.center - beforeDrag.center,
+      isNot(Offset.zero),
+      reason: '「移动画布」应该真的把画布挪走',
+    );
+
+    // 关掉再进来（放弃修改也算）：上次看到哪儿，这次还停在那儿。
+    await tester.tap(find.byTooltip('放弃修改'));
+    await tester.pumpAndSettle();
+    await openCanvas(tester, viewKey: 'ink-1');
+
+    expect(find.text('150%'), findsOneWidget, reason: '放大倍数该记住');
+    expect(
+      canvasRect(tester).center,
+      afterDrag.center,
+      reason: '画布位置该记住，不该弹回正中',
+    );
   });
 
   testWidgets('放大之后落笔位置依然准：同一个屏幕点更靠近画布中心', (tester) async {

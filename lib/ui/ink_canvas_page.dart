@@ -22,6 +22,32 @@ class InkCanvasResult {
   final PaperStyle paper;
 }
 
+/// 画布页的视图状态：放大倍数 + 平移了多少。
+///
+/// 为什么要在页面之间带着走：画布放大之后为了看别的角落会把画面拖开，
+/// 一退出再进来又回到正中间，等于白调了。
+class InkCanvasView {
+  const InkCanvasView({this.scale = 1, this.offset = Offset.zero});
+
+  static const InkCanvasView initial = InkCanvasView();
+
+  final double scale;
+  final Offset offset;
+
+  @override
+  bool operator ==(Object other) =>
+      other is InkCanvasView && other.scale == scale && other.offset == offset;
+
+  @override
+  int get hashCode => Object.hash(scale, offset);
+}
+
+/// 每块画布上次看的位置。
+///
+/// 只记在本机这一次运行期间：退出编辑页再进来还在，重开 App 回到默认。
+/// 视角是「怎么看」而不是内容，不该写进正文、更不该同步到另一台设备上去。
+final Map<String, InkCanvasView> inkViewCache = {};
+
 /// 全屏手写画布。
 ///
 /// 为什么不在正文里直接画：正文本体是一个输入框，它自己要用拖动手势做选词，
@@ -35,6 +61,7 @@ class InkCanvasPage extends StatefulWidget {
     this.canvasWidth = inkCanvasWidth,
     this.canvasHeight = inkCanvasHeight,
     this.paper = PaperStyle.blank,
+    this.viewKey,
   });
 
   final List<InkStroke> initialStrokes;
@@ -45,6 +72,9 @@ class InkCanvasPage extends StatefulWidget {
 
   /// 进来时用的纸张样式，改完会跟着结果带回去。
   final PaperStyle paper;
+
+  /// 这块画布在数据里的 id。带上它就能记住上次看到哪儿了。
+  final String? viewKey;
 
   @override
   State<InkCanvasPage> createState() => _InkCanvasPageState();
@@ -83,8 +113,9 @@ class _InkCanvasPageState extends State<InkCanvasPage> {
   /// 画布本体的 key：坐标换算要拿它的 RenderBox，缩放平移之后落笔才准。
   final GlobalKey _canvasKey = GlobalKey();
 
-  double _scale = 1;
-  Offset _offset = Offset.zero;
+  /// 进来时接着上次的视角（可能是正的，也可能是上次拖到别处的位置）。
+  late double _scale = _lastView.scale;
+  late Offset _offset = _lastView.offset;
   bool _panMode = false;
   Offset? _panFrom;
   Offset _panOrigin = Offset.zero;
@@ -99,7 +130,18 @@ class _InkCanvasPageState extends State<InkCanvasPage> {
 
   @override
   void dispose() {
+    // 出去的时候把视角记下来，下次打开同一块画布还停在这儿。
+    final key = widget.viewKey;
+    if (key != null) {
+      inkViewCache[key] = InkCanvasView(scale: _scale, offset: _offset);
+    }
     super.dispose();
+  }
+
+  InkCanvasView get _lastView {
+    final key = widget.viewKey;
+    if (key == null) return InkCanvasView.initial;
+    return inkViewCache[key] ?? InkCanvasView.initial;
   }
 
   void _pushUndo() {

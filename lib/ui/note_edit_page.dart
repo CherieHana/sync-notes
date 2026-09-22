@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart';
@@ -856,6 +857,8 @@ class _NoteEditPageState extends State<NoteEditPage> {
           canvasWidth: ink.canvasWidth,
           canvasHeight: ink.canvasHeight,
           paper: paperBefore,
+          // 带上 id：上次在这块画布上放大/拖到哪，这次进来还停在那儿。
+          viewKey: inkId,
         ),
       ),
     );
@@ -1361,6 +1364,53 @@ class _NoteEditPageState extends State<NoteEditPage> {
     if (error != null && mounted) _toast(error);
   }
 
+  /// 手机上长按链接弹出来的菜单。
+  ///
+  /// 库自带的那份在桌面平台上会直接 assert，文案也是库里的通用词；
+  /// 这里自己写一份，两端都能用，措辞也统一。
+  Future<LinkMenuAction> _pickLinkAction(
+    BuildContext context,
+    String link,
+    Node node,
+  ) async {
+    final action = await showModalBottomSheet<LinkMenuAction>(
+      context: context,
+      builder: (sheet) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              dense: true,
+              title: Text(
+                link,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: Theme.of(sheet).hintColor),
+              ),
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.open_in_new),
+              title: const Text('打开链接'),
+              onTap: () => Navigator.of(sheet).pop(LinkMenuAction.launch),
+            ),
+            ListTile(
+              leading: const Icon(Icons.copy_all_outlined),
+              title: const Text('复制链接'),
+              onTap: () => Navigator.of(sheet).pop(LinkMenuAction.copy),
+            ),
+            ListTile(
+              leading: const Icon(Icons.link_off),
+              title: const Text('删除链接'),
+              onTap: () => Navigator.of(sheet).pop(LinkMenuAction.remove),
+            ),
+          ],
+        ),
+      ),
+    );
+    return action ?? LinkMenuAction.none;
+  }
+
   /// 选一个本机文件，在光标处插一条指向它的链接。
   ///
   /// 存的是本机路径：换台设备点开会提示文件不在这台机器上（不走服务端存储）。
@@ -1599,11 +1649,25 @@ class _NoteEditPageState extends State<NoteEditPage> {
                         placeholder: '写点什么…',
                         editorKey: _editorKey,
                         // 链接：点网址打开浏览器、点文件链接交给系统默认程序。
-                        // 桌面端是 Ctrl+点击，手机上长按弹菜单（库自带，中文标签）。
                         onLaunchUrl: (url) => unawaited(_openLink(url)),
                         // 库默认会给不认识的文字补 https://，会把 file:///… 改成
                         // https://file:///…；文件链接得原样放行。
                         transformLink: normalizeLink,
+                        // 电脑上点链接就直接打开。
+                        //
+                        // 库默认在桌面端要求「按住 Ctrl 再点」，太隐蔽了——用户
+                        // 点了没反应只会以为坏了（反馈过）。手机上保持库里那套：
+                        // 点了只放光标，长按才弹菜单，不然在手机上没法把光标点进链接里。
+                        customRecognizerBuilder: (attribute, leaf) {
+                          if (isMobilePlatform(context)) return null;
+                          if (attribute.key != Attribute.link.key) return null;
+                          final url = attribute.value;
+                          if (url is! String || url.isEmpty) return null;
+                          return TapGestureRecognizer()
+                            ..onTap = () => unawaited(_openLink(url));
+                        },
+                        // 手机上长按链接弹的菜单，文案自己写。
+                        linkActionPickerDelegate: _pickLinkAction,
                         onTapDown: _handleTapDown,
                         onSingleLongTapStart: (details, positionOf) {
                           // 长按起点记成文本位置，后续拖动都从它拉选区。
@@ -1681,7 +1745,8 @@ class _NoteEditPageState extends State<NoteEditPage> {
     return QuillSimpleToolbar(
       key: _toolbarKey,
       controller: controller,
-      config: const QuillSimpleToolbarConfig(
+      // 不是 const：下面那个 validateLink 是个闭包。
+      config: QuillSimpleToolbarConfig(
         // 按钮收紧一点：一排要塞下字号加六种样式，默认尺寸在窄屏手机上会顶到边框。
         iconTheme: QuillIconTheme(
           iconButtonUnselectedData: IconButtonData(
@@ -1726,6 +1791,15 @@ class _NoteEditPageState extends State<NoteEditPage> {
         showSmallButton: false,
         showDirection: false,
         multiRowsDisplay: false,
+        buttonOptions: QuillSimpleToolbarButtonOptions(
+          linkStyle: QuillToolbarLinkStyleButtonOptions(
+            // 库默认只接受带 http:// https:// 之类的地址，用户直接填
+            // www.example.com 或者一个本机路径时，「确定」按钮一直是灰的，
+            // 点了没反应。这里放宽成：只要不是空的就收下，
+            // 真正打不开的时候由链接打开那一步给提示。
+            validateLink: (link) => link.trim().isNotEmpty,
+          ),
+        ),
       ),
     );
   }
