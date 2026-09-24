@@ -53,4 +53,34 @@ void main() {
     expect(imageIdsIn('普通正文，没有图片').isEmpty, isTrue);
     expect(imageIdsIn('[[img:不是uuid]]').isEmpty, isTrue);
   });
+
+  group('数正文有多少字', () {
+    test('中文字一个字算一个', () {
+      expect(countChars('今天开会'), 4);
+      expect(countChars(''), 0);
+    });
+
+    test('换行、空格、全角空格都不算', () {
+      expect(countChars('今天 开会\n第二行'), 7);
+      expect(countChars('　全角空格　'), 4);
+      expect(countChars('   \n\n  '), 0);
+    });
+
+    test('图片和手写块不算字', () {
+      // 它们在正文里各占一个 \\uFFFC 的位子。
+      expect(countChars('看图\uFFFC结束'), 4);
+      expect(countChars('\uFFFC'), 0);
+    });
+
+    test('emoji 这样的字符按一个算', () {
+      expect(countChars('开心😀'), 3);
+    });
+
+    test('老格式的笔记打开后，图片标记也不占字数', () {
+      const inkId = '44444444-4444-4444-4444-444444444444';
+      // 老格式的 [[ink:…]] 打开时会换成内嵌块，不再是一串看得见的字。
+      final document = RichBody.documentFrom('标题\n[[ink:$inkId]]');
+      expect(countChars(document.toPlainText()), 2);
+    });
+  });
 }

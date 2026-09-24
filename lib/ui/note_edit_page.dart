@@ -1496,6 +1496,20 @@ class _NoteEditPageState extends State<NoteEditPage> {
       centerTitle: true,
       actions: [
         if (!_needsUnlock && controller != null)
+          // 字数：跟着正文变，所以挂在 controller 上重建。
+          ListenableBuilder(
+            listenable: controller,
+            builder: (context, _) => Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                child: Text(
+                  '${countChars(controller.document.toPlainText())} 字',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            ),
+          ),
+        if (!_needsUnlock && controller != null)
           IconButton(
             tooltip: '回到光标',
             icon: const Icon(Icons.my_location),

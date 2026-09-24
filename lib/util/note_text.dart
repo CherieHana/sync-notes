@@ -120,6 +120,20 @@ int uncheckedCount(String body) => uncheckedTodos(body).length;
 
 final Map<String, List<UncheckedTodo>> _todoCache = {};
 
+/// 空白字符，外加图片/手写块在正文里的那个占位符。
+///
+/// Dart 的 `\s` 跟着 ECMAScript 走，全角空格、不换行空格这些都算在内。
+final RegExp _notAChar = RegExp(r'[\s\uFFFC]', unicode: true);
+
+/// 数一段正文有多少字。
+///
+/// 空白（换行、空格、全角空格）不算，图片和手写块那种占位符也不算——
+/// 用户想知道的是「写了多少字」，不是这串数据有多长。
+int countChars(String text) {
+  if (text.isEmpty) return 0;
+  return text.replaceAll(_notAChar, '').runes.length;
+}
+
 String _plainTextFromOps(List<dynamic> ops) {
   final buffer = StringBuffer();
   for (final op in ops) {

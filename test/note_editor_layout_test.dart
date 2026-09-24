@@ -121,6 +121,48 @@ void main() {
     expect(image.right, lessThan(editor.right - 100));
   });
 
+  testWidgets('右上角显示字数，打字会跟着变', (tester) async {
+    await pumpEditor(tester, '今天开会');
+
+    // 顶栏在「回到光标」左边有一处字数。空白不算，图片/手写块也不算。
+    expect(find.text('4 字'), findsOneWidget);
+
+    // 走和真机输入法一样的路子：编辑器把它交给 controller 去改正文。
+    await tester.tap(find.byType(QuillEditor));
+    await tester.pump();
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: '今天开会字\n',
+        selection: TextSelection.collapsed(offset: 5),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('5 字'), findsOneWidget, reason: '字数要跟着输入变');
+  });
+
+  testWidgets('字数不数图片和换行', (tester) async {
+    await pumpEditor(tester, '看图\n[[img:$imageId]]\n结束');
+
+    // 「看图」+「结束」四个字；图片和两次换行都不算。
+    expect(find.text('4 字'), findsOneWidget);
+  });
+
+  testWidgets('窄屏手机上顶栏多了字数也不会挤爆', (tester) async {
+    tester.view.physicalSize = const Size(360 * 3, 640 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+
+    await pumpEditor(tester, '今天开会');
+
+    expect(tester.takeException(), isNull, reason: '顶栏这一排放不下会报 overflow');
+    final counter = tester.getRect(find.text('4 字'));
+    final caret = tester.getRect(find.byTooltip('回到光标'));
+    expect(counter.height, lessThan(30), reason: '字数被挤成两行了');
+    expect(counter.right, lessThanOrEqualTo(caret.left), reason: '字数盖住了「回到光标」');
+    expect(find.byIcon(Icons.more_vert), findsOneWidget);
+  });
+
   testWidgets('图片独占一行，不会压住前面那行文字', (tester) async {
     await pumpEditor(tester, '第一行\n[[img:$imageId]]\n第二行');
 
